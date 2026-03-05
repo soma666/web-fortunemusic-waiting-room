@@ -7,6 +7,8 @@ import { EventCard } from "@/components/EventCard";
 import { StatsCards } from "@/components/StatsCards";
 import { WaitingRoomGrid } from "@/components/WaitingRoomGrid";
 import { formatDate } from "@/utils/date";
+import { saveBatchHistoryRecords } from "@/lib/history";
+import { HistoryPanel } from "@/components/HistoryPanel";
 
 import {
   Banner,
@@ -86,6 +88,7 @@ export function App() {
 
   let [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   let [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + 20 * 1000));
+  let [showHistory, setShowHistory] = useState(false);
 
   // Init Events Data (only once on mount)
   useEffect(() => {
@@ -155,6 +158,22 @@ export function App() {
       setWaitingRooms(wr.waitingRooms);
       setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
       console.log("Refreshed Waiting Rooms:", wr);
+
+      // Save to history
+      const records: Array<{ memberId: string; waitingCount: number; waitingTime: number }> = [];
+      wr.waitingRooms.forEach((rooms) => {
+        rooms.forEach((room) => {
+          records.push({
+            memberId: room.ticketCode,
+            waitingCount: room.peopleCount,
+            waitingTime: room.waitingTime,
+          });
+        });
+      });
+      if (records.length > 0) {
+        saveBatchHistoryRecords(records);
+        console.log("Saved history records:", records.length);
+      }
 
       // Update refresh times
       setLastUpdate(new Date());
@@ -230,7 +249,11 @@ export function App() {
   return (
     <div className="min-h-screen relative">
       {/* Navigation Bar - Full width, no padding */}
-      <Navbar02 events={events} onEventSelect={handleEventSelect} />
+      <Navbar02 
+        events={events} 
+        onEventSelect={handleEventSelect}
+        onOpenHistory={() => setShowHistory(true)}
+      />
 
       {/* Main Content Container - With appropriate padding */}
       <div className="container mx-auto px-4 md:px-6 lg:px-8 max-w-7xl">
@@ -304,6 +327,13 @@ export function App() {
           />
         </div>
       </div>
+
+      {/* History Panel */}
+      <HistoryPanel
+        isOpen={showHistory}
+        onClose={() => setShowHistory(false)}
+        members={members}
+      />
     </div>
   );
 }

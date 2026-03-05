@@ -17,6 +17,7 @@ interface room {
   thumbnailUrl: string;
   waitingCount: number;
   waitingTime: number;
+  avgWaitTime: number;
 }
 
 function joinMemberWaitingRoom(
@@ -31,6 +32,11 @@ function joinMemberWaitingRoom(
         let roomId = room.ticketCode;
         if (members.has(roomId)) {
           let member = members.get(roomId)!;
+          // Calculate average wait time per person (waitingTime / peopleCount)
+          const avgWaitTime = room.peopleCount > 0 
+            ? Math.floor(room.waitingTime / room.peopleCount) 
+            : 0;
+          
           result.push({
             id: roomId,
             order: member.order,
@@ -38,6 +44,7 @@ function joinMemberWaitingRoom(
             thumbnailUrl: member.thumbnailUrl,
             waitingCount: room.peopleCount,
             waitingTime: room.waitingTime,
+            avgWaitTime: avgWaitTime,
           });
         }
       }
@@ -83,6 +90,22 @@ export function WaitingRoomGrid({ currentSessionID, waitingRooms, members }: Wai
                 </span>
               </div>
               <div className="text-xs text-muted-foreground mt-1">wait time</div>
+            </div>
+            {/* Average wait time per person */}
+            <div className="text-center mt-3 pt-3 border-t border-dashed">
+              <div className={`flex items-center justify-center gap-1 text-sm ${room.waitingCount > 0 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                <span className="font-semibold font-mono">
+                  {room.waitingCount > 0 
+                    ? (() => {
+                        const totalSeconds = Math.floor(room.avgWaitTime);
+                        const minutes = Math.floor(totalSeconds / 60);
+                        const seconds = totalSeconds % 60;
+                        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                      })()
+                    : '--:--'}
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">avg time/person</div>
             </div>
           </CardContent>
         </Card>

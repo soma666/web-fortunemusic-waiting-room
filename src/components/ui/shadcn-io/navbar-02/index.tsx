@@ -61,6 +61,7 @@ export interface Navbar02Props extends React.HTMLAttributes<HTMLElement> {
   onSignInClick?: () => void;
   onCtaClick?: () => void;
   onEventSelect?: (eventId: string) => void;
+  onOpenHistory?: () => void;
 }
 
 
@@ -117,6 +118,7 @@ export const Navbar02 = ({
   onSignInClick,
   onCtaClick,
   onEventSelect,
+  onOpenHistory,
   ...props
 }: Navbar02Props) => {
   const [isMobile, setIsMobile] = useState(false);
@@ -336,6 +338,15 @@ export const Navbar02 = ({
         </div>
         {/* Right side */}
         <div className="flex items-center gap-3">
+          {onOpenHistory && (
+            <button
+              onClick={onOpenHistory}
+              className="inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors cursor-pointer"
+              title="历史数据"
+            >
+              📊 历史
+            </button>
+          )}
           <ThemeSwitcher defaultValue="system" onChange={setTheme} value={theme} />
           <IconButton
             icon={GithubIcon}
