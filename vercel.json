@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/api/history", "destination": "/api/history" }
+  ],
+  "functions": {
+    "api/history.ts": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  }
+}

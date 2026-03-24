@@ -7,7 +7,8 @@ import { EventCard } from "@/components/EventCard";
 import { StatsCards } from "@/components/StatsCards";
 import { WaitingRoomGrid } from "@/components/WaitingRoomGrid";
 import { formatDate } from "@/utils/date";
-import { saveBatchHistoryRecords } from "@/lib/history";
+import { saveBatchHistoryRecords } from "@/lib/history-api";
+import type { HistoryBatchRecord } from "@/lib/history-types";
 import { HistoryPanel } from "@/components/HistoryPanel";
 
 import {
@@ -70,25 +71,25 @@ function updateBackgroundImage(logoUrl: string | null) {
 
 
 export function App() {
-  let [loading, setLoading] = useState(true);
-  let [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  let [events, setEvents] = useState<Map<number, Event[]>>(new Map());
-  let [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [events, setEvents] = useState<Map<number, Event[]>>(new Map());
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
 
-  let [sessions, setSessions] = useState<Map<number, Session>>(new Map());
-  let [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [sessions, setSessions] = useState<Map<number, Session>>(new Map());
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
 
-  let [waitingRooms, setWaitingRooms] = useState<Map<number, WaitingRoom[]>>(new Map());
-  let [totalWaitingPeople, setTotalWaitingPeople] = useState<number>(0);
+  const [waitingRooms, setWaitingRooms] = useState<Map<number, WaitingRoom[]>>(new Map());
+  const [totalWaitingPeople, setTotalWaitingPeople] = useState<number>(0);
 
-  let [members, setMembers] = useState<Map<string, Member>>(new Map());
+  const [members, setMembers] = useState<Map<string, Member>>(new Map());
 
-  let [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  let [lastUpdate, setLastUpdate] = useState<Date>(new Date());
-  let [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + 20 * 1000));
-  let [showHistory, setShowHistory] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + 20 * 1000));
+  const [showHistory, setShowHistory] = useState(false);
 
   // Init Events Data (only once on mount)
   useEffect(() => {
@@ -126,7 +127,7 @@ export function App() {
         setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
         console.log("Fetched Waiting Rooms:", wr);
 
-        // Update refresh times
+        // Update refresh times (every 20 seconds)
         setLastUpdate(new Date());
         setNextRefreshTime(new Date(Date.now() + 20 * 1000));
 
@@ -160,11 +161,18 @@ export function App() {
       console.log("Refreshed Waiting Rooms:", wr);
 
       // Save to history
-      const records: Array<{ memberId: string; waitingCount: number; waitingTime: number }> = [];
-      wr.waitingRooms.forEach((rooms) => {
+      const records: HistoryBatchRecord[] = [];
+      wr.waitingRooms.forEach((rooms, sessionId) => {
         rooms.forEach((room) => {
+          const member = members.get(room.ticketCode);
           records.push({
             memberId: room.ticketCode,
+            memberName: member?.name || room.ticketCode,
+            memberAvatar: member?.thumbnailUrl,
+            eventId: selectedEvent?.id || 0,
+            eventName: selectedEvent?.name || '',
+            sessionId: sessionId,
+            sessionName: selectedSession?.name || '',
             waitingCount: room.peopleCount,
             waitingTime: room.waitingTime,
           });
@@ -175,7 +183,7 @@ export function App() {
         console.log("Saved history records:", records.length);
       }
 
-      // Update refresh times
+      // Update refresh times (every 20 seconds)
       setLastUpdate(new Date());
       setNextRefreshTime(new Date(Date.now() + 20 * 1000));
     } catch (err) {
@@ -233,18 +241,16 @@ export function App() {
     }
   }, [selectedSession?.id]);
 
-  // Auto-refresh timer for waiting rooms only
-  useEffect(() => {
-    const checkRefresh = () => {
-      const now = new Date();
-      if (now >= nextRefreshTime && !loading) {
-        refreshWaitingRooms();
-      }
-    };
-
-    const interval = setInterval(checkRefresh, 1000);
-    return () => clearInterval(interval);
-  }, [nextRefreshTime, loading, selectedSession]);
+  // Auto-refresh timer for waiting rooms only - DISABLED for stability
+  // useEffect(() => {
+  //   const interval = setInterval(() => {
+  //     const now = new Date();
+  //     if (now >= nextRefreshTime && !loading && selectedSession) {
+  //       refreshWaitingRooms();
+  //     }
+  //   }, 5000);
+  //   return () => clearInterval(interval);
+  // }, [nextRefreshTime, loading, selectedSession]);
 
   return (
     <div className="min-h-screen relative">
@@ -332,7 +338,9 @@ export function App() {
       <HistoryPanel
         isOpen={showHistory}
         onClose={() => setShowHistory(false)}
-        members={members}
+        members={new Map(Array.from(members.entries()).map(([id, m]) => [id, { name: m.name, avatar: m.thumbnailUrl }]))}
+        eventInfo={{ id: selectedEvent?.id || 0, name: selectedEvent?.name || '' }}
+        sessionInfo={{ id: selectedSession?.id || 0, name: selectedSession?.name || '' }}
       />
     </div>
   );

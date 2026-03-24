@@ -1,111 +1,84 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
-import { 
-  getHistoryData, 
-  getAllTimestamps, 
-  exportHistoryData, 
-  importHistoryData,
-  clearHistoryData,
-  getHistorySummary,
-  type HistoryRecord 
-} from '@/lib/history';
-import { type Member } from '@/api/fortunemusic/events';
+import { Badge } from './ui/badge';
+import { Switch } from './ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { HistoryChart } from './HistoryChart';
+import {
+  fetchHistory,
+  saveBatchHistoryRecords,
+  deleteHistory,
+  calculateChartData,
+  calculateMemberStats,
+  calculateSummary,
+  getUniqueEvents,
+  getUniqueSessions,
+  getSettings,
+  saveSettings,
+} from '@/lib/history-api';
+import type { HistorySettings, HistoryRecord, MemberStats } from '@/lib/history-types';
 import { format } from 'date-fns';
+
+const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#0088FE', '#00C49F', '#FF8042', '#A4DE6C'];
+const PLAYBACK_SPEEDS = [0.5, 1, 2, 4];
 
 interface HistoryPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  members: Map<string, Member>;
+  members: Map<string, { name: string; avatar?: string }>;
+  eventInfo?: { id: number; name: string };
+  sessionInfo?: { id: number; name: string };
 }
 
-export function HistoryPanel({ isOpen, onClose, members }: HistoryPanelProps) {
-  const [historyData, setHistoryData] = useState<Record<string, Record<number, { waitingCount: number; waitingTime: number }>>>({});
-  const [timestamps, setTimestamps] = useState<number[]>([]);
-  const [selectedTimestampIndex, setSelectedTimestampIndex] = useState<number>(0);
-  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
-  const [showMemberSelector, setShowMemberSelector] = useState(false);
-  const [importResult, setImportResult] = useState<{ imported: number; skipped: number; conflicts: number } | null>(null);
-  
-  // Playback state
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const PLAY_DURATION_MS = 30000; // 30 seconds to play entire timeline
+export function HistoryPanel({
+  isOpen,
+  onClose,
+  members,
+  eventInfo,
+  sessionInfo,
+}: HistoryPanelProps) {
+  const [records, setRecords] = useState<HistoryRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Load history data
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [showMemberSelector, setShowMemberSelector] = useState(false);
+  const [filterEventId, setFilterEventId] = useState<number | undefined>();
+  const [filterSessionId, setFilterSessionId] = useState<number | undefined>();
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [yAxisMode, setYAxisMode] = useState<'waitingCount' | 'waitingTime' | 'avgWaitingTime'>('waitingCount');
+  const [viewMode, setViewMode] = useState<'chart' | 'cards' | 'list'>('chart');
+  const [settings, setSettings] = useState<HistorySettings>(getSettings());
+
+  const loadHistory = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchHistory({
+        eventId: filterEventId,
+        sessionId: filterSessionId,
+        memberIds: selectedMemberIds.length > 0 ? selectedMemberIds : undefined,
+      });
+      setRecords(data);
+      setCurrentIndex(data.length > 0 ? data.length - 1 : 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load history');
+    } finally {
+      setLoading(false);
+    }
+  }, [filterEventId, filterSessionId, selectedMemberIds]);
+
   useEffect(() => {
     if (isOpen) {
-      const data = getHistoryData();
-      setHistoryData(data);
-      const ts = getAllTimestamps();
-      setTimestamps(ts);
-      setSelectedTimestampIndex(ts.length - 1); // Default to latest
-      setIsPlaying(false);
-      
-      // Auto-select first 3 members if none selected
-      if (selectedMembers.size === 0) {
-        const memberIds = Object.keys(data).slice(0, 3);
-        setSelectedMembers(new Set(memberIds));
-      }
+      loadHistory();
     }
-  }, [isOpen]);
+  }, [isOpen, loadHistory]);
 
-  // Playback logic
-  const startPlayback = useCallback(() => {
-    if (timestamps.length <= 1) return;
-    
-    setIsPlaying(true);
-    const intervalMs = PLAY_DURATION_MS / timestamps.length;
-    
-    playIntervalRef.current = setInterval(() => {
-      setSelectedTimestampIndex((prev) => {
-        if (prev >= timestamps.length - 1) {
-          // Reached end, stop playback
-          if (playIntervalRef.current) {
-            clearInterval(playIntervalRef.current);
-            playIntervalRef.current = null;
-          }
-          setIsPlaying(false);
-          return prev;
-        }
-        return prev + 1;
-      });
-    }, intervalMs);
-  }, [timestamps.length]);
-
-  const stopPlayback = useCallback(() => {
-    setIsPlaying(false);
-    if (playIntervalRef.current) {
-      clearInterval(playIntervalRef.current);
-      playIntervalRef.current = null;
-    }
-  }, []);
-
-  const togglePlayback = useCallback(() => {
-    if (isPlaying) {
-      stopPlayback();
-    } else {
-      // If at the end, restart from beginning
-      if (selectedTimestampIndex >= timestamps.length - 1) {
-        setSelectedTimestampIndex(0);
-      }
-      startPlayback();
-    }
-  }, [isPlaying, selectedTimestampIndex, timestamps.length, startPlayback, stopPlayback]);
-
-  // Handle slider drag events
-  const handleSliderDragStart = () => {
-    setIsDragging(true);
-    stopPlayback();
-  };
-
-  const handleSliderDragEnd = () => {
-    setIsDragging(false);
-    // User can manually start playback again after dragging
-  };
-
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (playIntervalRef.current) {
@@ -114,247 +87,343 @@ export function HistoryPanel({ isOpen, onClose, members }: HistoryPanelProps) {
     };
   }, []);
 
-  // Get current timestamp
-  const currentTimestamp = timestamps[selectedTimestampIndex] || 0;
+  const chartData = useMemo(() => {
+    return calculateChartData(records, selectedMemberIds, yAxisMode);
+  }, [records, selectedMemberIds, yAxisMode]);
 
-  // Get data at current timestamp
-  const currentData = useMemo(() => {
-    return timestamps.map((ts) => {
-      const dataAtTs: Record<string, { waitingCount: number; waitingTime: number }> = {};
-      Object.entries(historyData).forEach(([memberId, memberHistory]) => {
-        if (memberHistory[ts]) {
-          dataAtTs[memberId] = memberHistory[ts];
-        }
-      });
-      return { timestamp: ts, data: dataAtTs };
-    });
-  }, [timestamps, historyData]);
+  const memberStats = useMemo(() => {
+    return calculateMemberStats(records);
+  }, [records]);
 
-  // Calculate time range for timeline
-  const timeRange = useMemo(() => {
-    if (timestamps.length === 0) return { start: 0, end: 0 };
-    return { start: timestamps[0], end: timestamps[timestamps.length - 1] };
-  }, [timestamps]);
+  const summary = useMemo(() => {
+    return calculateSummary(records);
+  }, [records]);
 
-  // Format timestamp to readable time
-  const formatTime = (ts: number) => {
-    return format(new Date(ts), 'HH:mm:ss');
+  const availableEvents = useMemo(() => {
+    return getUniqueEvents(records);
+  }, [records]);
+
+  const availableSessions = useMemo(() => {
+    return getUniqueSessions(records, filterEventId);
+  }, [records, filterEventId]);
+
+  const selectedMembers = useMemo(() => {
+    return selectedMemberIds.map((id, index) => ({
+      id,
+      name: members.get(id)?.name || id,
+      avatar: members.get(id)?.avatar,
+      color: CHART_COLORS[index % CHART_COLORS.length],
+    }));
+  }, [selectedMemberIds, members]);
+
+  const togglePlayback = useCallback(() => {
+    if (chartData.length <= 1) return;
+
+    if (isPlaying) {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+      setIsPlaying(false);
+    } else {
+      if (currentIndex >= chartData.length - 1) {
+        setCurrentIndex(0);
+      }
+      setIsPlaying(true);
+      const intervalMs = 30000 / chartData.length / settings.playbackSpeed;
+
+      playIntervalRef.current = setInterval(() => {
+        setCurrentIndex((prev) => {
+          if (prev >= chartData.length - 1) {
+            if (playIntervalRef.current) {
+              clearInterval(playIntervalRef.current);
+              playIntervalRef.current = null;
+            }
+            setIsPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, intervalMs);
+    }
+  }, [chartData.length, currentIndex, isPlaying, settings.playbackSpeed]);
+
+  const handleSettingsChange = (newSettings: Partial<HistorySettings>) => {
+    const updated = { ...settings, ...newSettings };
+    setSettings(updated);
+    saveSettings(updated);
   };
 
-  // Handle export
+  const handleDeleteOld = async () => {
+    const daysAgo = settings.retentionDays * 24 * 60 * 60 * 1000;
+    const beforeTimestamp = Date.now() - daysAgo;
+    const deleted = await deleteHistory({ beforeTimestamp });
+    if (deleted > 0) {
+      loadHistory();
+    }
+  };
+
   const handleExport = () => {
-    const data = exportHistoryData();
+    const data = JSON.stringify(records, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `fortunemusic-history-${Date.now()}.json`;
+    a.download = `history-${format(new Date(), 'yyyy-MM-dd-HHmm')}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // Handle import
   const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
+
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const json = e.target?.result as string;
-        const result = importHistoryData(json, { overwrite: false });
-        setImportResult(result);
-        
-        // Refresh data
-        const data = getHistoryData();
-        setHistoryData(data);
-        const ts = getAllTimestamps();
-        setTimestamps(ts);
-        
-        // Clear result after 5 seconds
-        setTimeout(() => setImportResult(null), 5000);
-      } catch (error) {
-        alert('导入失败: Invalid JSON format');
+        const imported = JSON.parse(json) as HistoryRecord[];
+        if (Array.isArray(imported)) {
+          loadHistory();
+        }
+      } catch {
+        alert('Invalid file format');
       }
     };
     reader.readAsText(file);
-  };
-
-  // Handle clear
-  const handleClear = () => {
-    if (confirm('确定要清空所有历史数据吗？此操作不可恢复。')) {
-      clearHistoryData();
-      setHistoryData({});
-      setTimestamps([]);
-    }
-  };
-
-  // Toggle member selection
-  const toggleMember = (memberId: string) => {
-    const newSelected = new Set(selectedMembers);
-    if (newSelected.has(memberId)) {
-      newSelected.delete(memberId);
-    } else {
-      newSelected.add(memberId);
-    }
-    setSelectedMembers(newSelected);
-  };
-
-  // Get member name by ID
-  const getMemberName = (memberId: string) => {
-    const member = members.get(memberId);
-    return member?.name || memberId;
+    event.target.value = '';
   };
 
   if (!isOpen) return null;
 
-  const summary = getHistorySummary();
-
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-6xl h-[90vh] overflow-hidden flex flex-col">
-        <CardHeader className="flex-shrink-0">
+        <CardHeader className="flex-shrink-0 space-y-2">
           <div className="flex items-center justify-between">
-            <CardTitle>📊 历史数据面板</CardTitle>
-            <Button variant="outline" size="sm" onClick={onClose}>✕ 关闭</Button>
+            <CardTitle>历史数据面板</CardTitle>
+            <Button variant="outline" size="sm" onClick={onClose}>
+              关闭
+            </Button>
           </div>
-          
-          {/* Summary */}
-          <div className="text-sm text-muted-foreground mt-2">
-            共 {summary.memberCount} 位成员，{summary.recordCount} 条记录
-            {summary.timeRange.start && summary.timeRange.end && (
-              <span className="ml-2">
-                ({format(new Date(summary.timeRange.start), 'MM-dd HH:mm')} - {format(new Date(summary.timeRange.end), 'HH:mm:ss')})
-              </span>
+
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="secondary">
+              成员数: {summary.memberCount}
+            </Badge>
+            <Badge variant="secondary">
+              记录数: {summary.recordCount}
+            </Badge>
+            {summary.timeRange.start && (
+              <Badge variant="secondary">
+                {format(new Date(summary.timeRange.start), 'MM-dd HH:mm')} ~{' '}
+                {summary.timeRange.end ? format(new Date(summary.timeRange.end!), 'MM-dd HH:mm') : '-'}
+              </Badge>
             )}
           </div>
         </CardHeader>
-        
-        <CardContent className="flex-1 overflow-hidden flex flex-col gap-4">
-          {/* Timeline Slider */}
-          {timestamps.length > 0 && (
-            <div className="flex-shrink-0">
-              <div className="flex items-center gap-4">
-                {/* Play/Pause Button */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={togglePlayback}
-                  disabled={timestamps.length <= 1}
-                  title={isPlaying ? '暂停' : '播放'}
-                >
-                  {isPlaying ? '⏸️' : '▶️'}
-                </Button>
-                
-                <span className="text-sm text-muted-foreground w-16">时间轴:</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={timestamps.length - 1}
-                  value={selectedTimestampIndex}
-                  onChange={(e) => setSelectedTimestampIndex(parseInt(e.target.value))}
-                  onMouseDown={handleSliderDragStart}
-                  onMouseUp={handleSliderDragEnd}
-                  onTouchStart={handleSliderDragStart}
-                  onTouchEnd={handleSliderDragEnd}
-                  className="flex-1 cursor-pointer"
-                />
-                <span className="text-sm font-mono w-24 text-right">
-                  {formatTime(currentTimestamp)}
-                </span>
-              </div>
-            </div>
-          )}
-          
-          {/* Data Display */}
-          <div className="flex-1 overflow-auto">
-            {selectedMembers.size === 0 ? (
-              <div className="text-center text-muted-foreground py-8">
-                请选择要查看的成员
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {Array.from(selectedMembers).map((memberId) => {
-                  const record = historyData[memberId]?.[currentTimestamp];
-                  const allRecords = historyData[memberId] || {};
-                  const hasData = Object.keys(allRecords).length > 0;
-                  
-                  return (
-                    <Card key={memberId} className="p-4">
-                      <div className="font-semibold mb-2">{getMemberName(memberId)}</div>
-                      {record ? (
-                        <div className="space-y-1 text-sm">
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">排队人数:</span>
-                            <span className="font-mono">{record.waitingCount}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">等候时间:</span>
-                            <span className="font-mono">
-                              {Math.floor(record.waitingTime / 60)}:{(record.waitingTime % 60).toString().padStart(2, '0')}
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">
-                          {hasData ? '该时间点无数据' : '暂无历史数据'}
-                        </div>
-                      )}
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          
-          {/* Controls */}
-          <div className="flex-shrink-0 flex items-center justify-between gap-4 pt-4 border-t">
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => setShowMemberSelector(!showMemberSelector)}>
-                👥 选择成员 ({selectedMembers.size})
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleExport}>
-                📥 导出
-              </Button>
-              <label>
-                <input type="file" accept=".json" onChange={handleImport} className="hidden" />
-                <Button variant="outline" size="sm" as="span">
-                  📤 导入
-                </Button>
-              </label>
-              <Button variant="outline" size="sm" onClick={handleClear}>
-                🗑️ 清空
-              </Button>
-            </div>
-            
-            {/* Import Result */}
-            {importResult && (
-              <div className="text-sm text-muted-foreground">
-                导入完成: +{importResult.imported} 条，忽略 {importResult.skipped} 条冲突 {importResult.conflicts} 条
-              </div>
-            )}
-          </div>
-          
-          {/* Member Selector */}
-          {showMemberSelector && (
-            <div className="flex-shrink-0 p-4 bg-muted rounded-lg max-h-40 overflow-auto">
-              <div className="flex flex-wrap gap-2">
-                {Object.keys(historyData).map((memberId) => (
+
+        <CardContent className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-shrink-0 flex flex-wrap items-center gap-4 mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">视图:</span>
+              <div className="flex gap-1">
+                {(['chart', 'cards', 'list'] as const).map((mode) => (
                   <Button
-                    key={memberId}
-                    variant={selectedMembers.has(memberId) ? 'default' : 'outline'}
+                    key={mode}
+                    variant={viewMode === mode ? 'default' : 'outline'}
                     size="sm"
-                    onClick={() => toggleMember(memberId)}
+                    onClick={() => setViewMode(mode)}
                   >
-                    {getMemberName(memberId)}
+                    {mode === 'chart' ? '图表' : mode === 'cards' ? '卡片' : '列表'}
                   </Button>
                 ))}
-                {Object.keys(historyData).length === 0 && (
-                  <span className="text-muted-foreground">暂无历史数据</span>
-                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm">Y轴:</span>
+              <Select
+                value={yAxisMode}
+                onValueChange={(v) => setYAxisMode(v as typeof yAxisMode)}
+              >
+                <SelectTrigger className="w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="waitingCount">排队人数</SelectItem>
+                  <SelectItem value="waitingTime">等候时间</SelectItem>
+                  <SelectItem value="avgWaitingTime">平均等候时间</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm">速度:</span>
+              <Select
+                value={settings.playbackSpeed.toString()}
+                onValueChange={(v) => handleSettingsChange({ playbackSpeed: parseFloat(v) })}
+              >
+                <SelectTrigger className="w-20">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLAYBACK_SPEEDS.map((speed) => (
+                    <SelectItem key={speed} value={speed.toString()}>
+                      {speed}x
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={settings.autoSave}
+                onCheckedChange={(checked) => handleSettingsChange({ autoSave: checked })}
+              />
+              <span className="text-sm">自动保存</span>
+            </div>
+          </div>
+
+          <div className="flex-shrink-0 flex items-center gap-2 mb-4">
+            <Button variant="outline" size="sm" onClick={() => setShowMemberSelector(!showMemberSelector)}>
+              选择成员 ({selectedMemberIds.length})
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleDeleteOld}>
+              清理旧数据
+            </Button>
+          </div>
+
+          {showMemberSelector && (
+            <div className="flex-shrink-0 p-3 bg-muted rounded-lg max-h-32 overflow-auto mb-4">
+              <div className="flex flex-wrap gap-2">
+                {Array.from(members.entries()).map(([id, member]) => (
+                  <Button
+                    key={id}
+                    variant={selectedMemberIds.includes(id) ? 'default' : 'secondary'}
+                    size="sm"
+                    onClick={() => {
+                      setSelectedMemberIds((prev) =>
+                        prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+                      );
+                    }}
+                  >
+                    {member.name}
+                  </Button>
+                ))}
               </div>
             </div>
           )}
+
+          {viewMode !== 'list' && chartData.length > 0 && (
+            <div className="flex-shrink-0 flex items-center gap-3 mb-4">
+              <Button variant="outline" size="sm" onClick={togglePlayback} disabled={chartData.length <= 1}>
+                {isPlaying ? '暂停' : '播放'}
+              </Button>
+              <input
+                type="range"
+                min={0}
+                max={chartData.length - 1}
+                value={currentIndex}
+                onChange={(e) => setCurrentIndex(parseInt(e.target.value))}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-20">
+                {chartData[currentIndex]?.time || '-'}
+              </span>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-auto">
+            {loading ? (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                加载中...
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center h-full text-red-500">
+                {error}
+              </div>
+            ) : viewMode === 'chart' ? (
+              <div className="h-full">
+                <HistoryChart
+                  data={chartData}
+                  selectedMembers={selectedMembers}
+                  currentIndex={currentIndex}
+                  yAxisMode={yAxisMode}
+                />
+              </div>
+            ) : viewMode === 'cards' ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {memberStats.map((stat) => (
+                  <Card key={`${stat.memberId}-${stat.sessionId}`} className="p-4">
+                    <div className="font-semibold mb-2">{stat.memberName}</div>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">峰值:</span>
+                        <span className="font-mono">{stat.peakWaitingCount}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">平均:</span>
+                        <span className="font-mono">{stat.avgWaitingCount}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">最小:</span>
+                        <span className="font-mono">{stat.minWaitingCount}</span>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {memberStats.map((stat) => (
+                  <Card key={`${stat.memberId}-${stat.sessionId}`}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-lg">{stat.memberName}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-3 gap-4 text-sm">
+                        <div>
+                          <div className="text-muted-foreground">峰值人数</div>
+                          <div className="text-xl font-mono">{stat.peakWaitingCount}</div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">平均人数</div>
+                          <div className="text-xl font-mono">{stat.avgWaitingCount}</div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">数据点</div>
+                          <div className="text-xl font-mono">{stat.dataPoints}</div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-shrink-0 flex items-center justify-between gap-4 pt-4 border-t mt-4">
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={handleExport}>
+                导出
+              </Button>
+              <input
+                id="import-input"
+                type="file"
+                accept=".json"
+                onChange={handleImport}
+                className="hidden"
+              />
+              <Button variant="outline" size="sm" onClick={() => document.getElementById('import-input')?.click()}>
+                导入
+              </Button>
+              <Button variant="outline" size="sm" onClick={loadHistory}>
+                刷新
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
