@@ -1,3 +1,10 @@
+/**
+ * HistoryChart.tsx - 历史数据图表组件
+ * 
+ * 使用 Recharts 库渲染历史数据的折线图。
+ * 支持多成员数据对比，显示当前时间位置的参考线。
+ */
+
 import {
   LineChart,
   Line,
@@ -10,6 +17,8 @@ import {
   ReferenceLine,
 } from 'recharts';
 
+// ========== 组件接口 ==========
+
 interface ChartProps {
   data: Array<{
     time: string;
@@ -17,19 +26,29 @@ interface ChartProps {
     [memberId: string]: string | number | null;
   }>;
   selectedMembers: Array<{ id: string; name: string; color?: string }>;
-  currentIndex: number;
+  currentIndex: number;       // 当前播放位置
   yAxisMode: 'waitingCount' | 'waitingTime' | 'avgWaitingTime';
 }
 
+// ========== 常量定义 ==========
+
+/** 图表线条颜色（备用） */
 const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#0088FE', '#00C49F', '#FF8042', '#A4DE6C'];
 
+/** Y轴标签映射 */
 const yAxisLabels = {
   waitingCount: '排队人数',
   waitingTime: '等候时间 (秒)',
   avgWaitingTime: '平均等候时间 (秒)',
 };
 
+// ========== 主组件 ==========
+
+/**
+ * 历史数据图表组件
+ */
 export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }: ChartProps) {
+  // 无数据时显示提示
   if (data.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -38,6 +57,10 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
     );
   }
 
+  /**
+   * 自定义 Tooltip 组件
+   * 鼠标悬停时显示详细数据
+   */
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       return (
@@ -67,12 +90,17 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
         data={data}
         margin={{ top: 20, right: 30, left: 20, bottom: 10 }}
       >
+        {/* 网格线 */}
         <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+        
+        {/* X轴 - 时间 */}
         <XAxis
           dataKey="time"
           tick={{ fontSize: 12 }}
           tickMargin={10}
         />
+        
+        {/* Y轴 - 数值 */}
         <YAxis
           label={{
             value: yAxisLabels[yAxisMode],
@@ -82,8 +110,11 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
           }}
           tick={{ fontSize: 12 }}
         />
+        
+        {/* 鼠标悬停提示 */}
         <Tooltip content={<CustomTooltip />} />
 
+        {/* 图例 */}
         {selectedMembers.length > 0 && (
           <Legend
             formatter={(value, entry: any) => {
@@ -99,6 +130,7 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
           />
         )}
 
+        {/* 当前时间参考线 */}
         {data[currentIndex] && (
           <ReferenceLine
             x={data[currentIndex]?.time}
@@ -113,6 +145,7 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
           />
         )}
 
+        {/* 各成员的数据线 */}
         {selectedMembers.map((member, index) => (
           <Line
             key={member.id}
@@ -123,7 +156,7 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
             strokeWidth={2}
             dot={{ r: 3 }}
             activeDot={{ r: 5 }}
-            connectNulls
+            connectNulls  // 连接空值，避免断开
           />
         ))}
       </LineChart>
