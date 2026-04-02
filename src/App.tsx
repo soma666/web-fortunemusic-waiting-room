@@ -11,7 +11,7 @@
 
 import { fetchEvents, type Session, type Event, type Member } from "@/api/fortunemusic/events";
 import { fetchWaitingRooms, type WaitingRoom, type WaitingRooms } from "@/api/fortunemusic/waitingRooms";
-import { use, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SessionSelector } from "@/components/SessionSelector";
 import { findNearestEvent } from "@/lib/aggregator";
 import { EventCard } from "@/components/EventCard";
@@ -21,6 +21,7 @@ import { formatDate } from "@/utils/date";
 import { saveBatchHistoryRecords } from "@/lib/history-api";
 import type { HistoryBatchRecord } from "@/lib/history-types";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { REFRESH_INTERVAL_MS, POLL_CHECK_INTERVAL_MS } from "@/lib/constants";
 
 import {
   Banner,
@@ -128,7 +129,9 @@ export function App() {
   /** 上次更新时间 */
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   /** 下次刷新时间 */
-  const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + 20 * 1000));
+  const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + REFRESH_INTERVAL_MS));
+  /** 下次刷新时间的 ref，用于定时器中读取最新值 */
+  const nextRefreshTimeRef = useRef<Date>(nextRefreshTime);
   /** 是否显示历史面板 */
   const [showHistory, setShowHistory] = useState(false);
 
@@ -183,7 +186,9 @@ export function App() {
 
         // 设置刷新时间（每20秒刷新一次）
         setLastUpdate(new Date());
-        setNextRefreshTime(new Date(Date.now() + 20 * 1000));
+        const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
+        setNextRefreshTime(nextTime);
+        nextRefreshTimeRef.current = nextTime;
 
       } catch (err) {
         console.error("Failed to load events:", err);
@@ -202,7 +207,7 @@ export function App() {
    * 同时保存历史记录到后端存储
    * @param sessionId - 可选的场次ID，不传则使用当前选中场次
    */
-  const refreshWaitingRooms = async (sessionId?: number) => {
+  const refreshWaitingRooms = useCallback(async (sessionId?: number) => {
     const targetSessionId = sessionId || selectedSession?.id;
     if (!targetSessionId) return;
 
@@ -210,7 +215,6 @@ export function App() {
       console.log("Refreshing waiting rooms at:", new Date());
       const wr = await fetchWaitingRooms(targetSessionId);
 
-      // 更新公告消息
       if (wr.message) {
         setNotice(wr.message)
       } else {
@@ -221,9 +225,8 @@ export function App() {
       setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
       console.log("Refreshed Waiting Rooms:", wr);
 
-      // 构建历史记录并保存
       const records: HistoryBatchRecord[] = [];
-      wr.waitingRooms.forEach((rooms, sessionId) => {
+      wr.waitingRooms.forEach((rooms, sid) => {
         rooms.forEach((room) => {
           const member = members.get(room.ticketCode);
           records.push({
@@ -232,7 +235,7 @@ export function App() {
             memberAvatar: member?.thumbnailUrl,
             eventId: selectedEvent?.id || 0,
             eventName: selectedEvent?.name || '',
-            sessionId: sessionId,
+            sessionId: sid,
             sessionName: selectedSession?.name || '',
             waitingCount: room.peopleCount,
             waitingTime: room.waitingTime,
@@ -240,19 +243,23 @@ export function App() {
         });
       });
       
-      // 异步保存历史记录
       if (records.length > 0) {
-        saveBatchHistoryRecords(records);
-        console.log("Saved history records:", records.length);
+        const saved = await saveBatchHistoryRecords(records);
+        if (!saved) {
+          console.warn("Failed to save history records");
+        } else {
+          console.log("Saved history records:", records.length);
+        }
       }
 
-      // 更新刷新时间
       setLastUpdate(new Date());
-      setNextRefreshTime(new Date(Date.now() + 20 * 1000));
+      const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
+      setNextRefreshTime(nextTime);
+      nextRefreshTimeRef.current = nextTime;
     } catch (err) {
       console.error("Failed to refresh waiting rooms:", err);
     }
-  };
+  }, [selectedSession?.id, selectedEvent?.id, selectedEvent?.name, selectedSession?.name, members]);
 
   // ========== 事件选择处理 ==========
   
@@ -261,8 +268,7 @@ export function App() {
    * 切换活动后自动选择第一个场次
    * @param eventId - 活动ID字符串
    */
-  const handleEventSelect = (eventId: string) => {
-    // 在所有活动中查找匹配的事件
+  const handleEventSelect = useCallback((eventId: string) => {
     let foundEvent: Event | null = null;
     events.forEach((eventList: Event[]) => {
       const event = eventList.find((e: Event) => e.id.toString() === eventId);
@@ -276,11 +282,9 @@ export function App() {
       setSelectedEvent(selectedEventData);
       setSessions(selectedEventData.sessions);
 
-      // 更新成员列表
       const updatedMembers = extractMembers(selectedEventData.sessions);
       setMembers(updatedMembers);
 
-      // 自动选择第一个场次
       const firstSessionKey = selectedEventData.sessions.keys().next().value;
       if (firstSessionKey !== undefined) {
         const firstSession = selectedEventData.sessions.get(firstSessionKey);
@@ -292,7 +296,7 @@ export function App() {
       console.log("Selected Event from Navbar:", selectedEventData);
       console.log("Updated Members:", updatedMembers);
     }
-  };
+  }, [events]);
 
   // ========== 副作用处理 ==========
   
@@ -317,18 +321,20 @@ export function App() {
   }, [selectedSession?.id]);
 
   /**
-   * 自动刷新定时器 - 已禁用以提高稳定性
-   * 用户可通过手动刷新按钮触发刷新
+   * 自动刷新定时器
+   * 使用 useRef 读取最新的 nextRefreshTime，避免 frequency 重建 interval
    */
-  // useEffect(() => {
-  //   const interval = setInterval(() => {
-  //     const now = new Date();
-  //     if (now >= nextRefreshTime && !loading && selectedSession) {
-  //       refreshWaitingRooms();
-  //     }
-  //   }, 5000);
-  //   return () => clearInterval(interval);
-  // }, [nextRefreshTime, loading, selectedSession]);
+  useEffect(() => {
+    if (loading || !selectedSession) return;
+    
+    const interval = setInterval(() => {
+      const now = new Date();
+      if (now >= nextRefreshTimeRef.current) {
+        refreshWaitingRooms();
+      }
+    }, POLL_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [loading, selectedSession, refreshWaitingRooms]);
 
   // ========== 渲染 ==========
   

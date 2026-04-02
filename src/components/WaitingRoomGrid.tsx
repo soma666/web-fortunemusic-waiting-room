@@ -11,6 +11,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Clock } from 'lucide-react';
+import { useMemo } from 'react';
 import { getPeopleCountColors, getWaitingTimeColors } from '@/lib/status-colors';
 import { type WaitingRoom } from '@/api/fortunemusic/waitingRooms';
 import { type Member } from '@/api/fortunemusic/events';
@@ -87,7 +88,10 @@ function joinMemberWaitingRoom(
  */
 export function WaitingRoomGrid({ currentSessionID, waitingRooms, members }: WaitingRoomGridProps) {
   console.log("WaitingRoomGrid Props:", { currentSessionID, waitingRooms, members });
-  const rooms: room[] = joinMemberWaitingRoom(currentSessionID, waitingRooms, members);
+  const rooms = useMemo(
+    () => joinMemberWaitingRoom(currentSessionID, waitingRooms, members),
+    [currentSessionID, waitingRooms, members]
+  );
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-5 gap-4">

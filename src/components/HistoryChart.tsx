@@ -16,6 +16,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
+import { CHART_COLORS } from '@/lib/constants';
 
 // ========== 组件接口 ==========
 
@@ -31,9 +32,6 @@ interface ChartProps {
 }
 
 // ========== 常量定义 ==========
-
-/** 图表线条颜色（备用） */
-const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#0088FE', '#00C49F', '#FF8042', '#A4DE6C'];
 
 /** Y轴标签映射 */
 const yAxisLabels = {

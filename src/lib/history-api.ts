@@ -73,7 +73,8 @@ export async function fetchHistory(filter: HistoryFilter = {}): Promise<HistoryR
   try {
     const result = await apiRequest<{ records: HistoryRecord[]; count: number }>(endpoint);
     return result.records;
-  } catch {
+  } catch (error) {
+    console.error('Failed to fetch history:', error);
     return [];
   }
 }

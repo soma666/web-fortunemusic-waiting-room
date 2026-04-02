@@ -30,12 +30,8 @@ import {
   saveSettings,
 } from '@/lib/history-api';
 import type { HistorySettings, HistoryRecord, MemberStats } from '@/lib/history-types';
+import { CHART_COLORS } from '@/lib/constants';
 import { format } from 'date-fns';
-
-// ========== 常量定义 ==========
-
-/** 图表线条颜色 */
-const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#0088FE', '#00C49F', '#FF8042', '#A4DE6C'];
 
 /** 播放速度选项 */
 const PLAYBACK_SPEEDS = [0.5, 1, 2, 4];
@@ -178,12 +174,14 @@ export function HistoryPanel({
   const togglePlayback = useCallback(() => {
     if (chartData.length <= 1) return;
 
+    // 始终先清理旧定时器，防止竞争条件
+    if (playIntervalRef.current) {
+      clearInterval(playIntervalRef.current);
+      playIntervalRef.current = null;
+    }
+
     if (isPlaying) {
       // 停止播放
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current);
-        playIntervalRef.current = null;
-      }
       setIsPlaying(false);
     } else {
       // 开始播放
@@ -260,12 +258,32 @@ export function HistoryPanel({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const json = e.target?.result as string;
         const imported = JSON.parse(json) as HistoryRecord[];
-        if (Array.isArray(imported)) {
-          loadHistory();
+        if (!Array.isArray(imported) || imported.length === 0) {
+          alert('导入文件为空或格式不正确');
+          return;
+        }
+        // 将导入的数据写入后端
+        const saved = await saveBatchHistoryRecords(
+          imported.map((r) => ({
+            memberId: r.memberId,
+            memberName: r.memberName,
+            memberAvatar: r.memberAvatar,
+            eventId: r.eventId,
+            eventName: r.eventName,
+            sessionId: r.sessionId,
+            sessionName: r.sessionName,
+            waitingCount: r.waitingCount,
+            waitingTime: r.waitingTime,
+          }))
+        );
+        if (saved) {
+          await loadHistory();
+        } else {
+          alert('导入数据保存失败');
         }
       } catch {
         alert('Invalid file format');

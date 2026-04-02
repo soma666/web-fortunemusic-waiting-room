@@ -23,6 +23,26 @@ export interface WaitingRoom {
     waitingTime: number;    // 等候时间（秒）
 }
 
+// ========== API 响应类型定义 ==========
+
+/** 等待室 API 响应中单个成员的信息 */
+interface MemberWaitInfo {
+    totalCount: number;
+    totalWait: number;
+}
+
+/** 等待室 API 响应中的时区（场次）信息 */
+interface TimezoneData {
+    e_id: string;
+    members: Record<string, MemberWaitInfo>;
+}
+
+/** 等待室 API 的原始响应结构 */
+interface WaitingRoomsAPIResponse {
+    timezones: TimezoneData[];
+    dateMessage: string;
+}
+
 // ========== API 请求函数 ==========
 
 /**
@@ -55,7 +75,7 @@ export async function fetchWaitingRooms(eventID: number): Promise<WaitingRooms> 
             throw new Error(`Failed to fetch waiting rooms: ${response.status} ${response.statusText}`);
         }
 
-        let resp: any = await response.json();
+        let resp = await response.json() as WaitingRoomsAPIResponse;
         let waitingRooms: WaitingRooms = flattenWaitingRooms(resp);
         return waitingRooms;
     } catch (error) {
@@ -75,14 +95,14 @@ export async function fetchWaitingRooms(eventID: number): Promise<WaitingRooms> 
  * @param data - API 返回的原始数据
  * @returns 结构化的等待室数据
  */
-function flattenWaitingRooms(data: any): WaitingRooms {
+function flattenWaitingRooms(data: WaitingRoomsAPIResponse): WaitingRooms {
     let waitingRooms: Map<number, WaitingRoom[]> = new Map<number, WaitingRoom[]>();
     
     // 遍历所有时区（场次）
-    data.timezones.forEach((timezone: any) => {
+    data.timezones.forEach((timezone) => {
         // 提取场次 ID（格式为 "e12345"，需要去掉前缀 "e"）
-        let eventIDStr = timezone.e_id as string;
-        let eventID = +(eventIDStr.slice(1)) as number;
+        let eventIDStr = timezone.e_id;
+        let eventID = +(eventIDStr.slice(1));
 
         // 获取或创建该场次的等待室列表
         let rooms: WaitingRoom[] = waitingRooms.get(eventID) || [];
@@ -91,9 +111,9 @@ function flattenWaitingRooms(data: any): WaitingRooms {
         Object.keys(timezone.members).forEach((key) => {
             const memberInfo = timezone.members[key];
             rooms.push({
-                ticketCode: key,                    // 成员票务代码
-                peopleCount: memberInfo.totalCount, // 排队人数
-                waitingTime: memberInfo.totalWait,  // 等候时间（秒）
+                ticketCode: key,
+                peopleCount: memberInfo.totalCount,
+                waitingTime: memberInfo.totalWait,
             });
         });
         waitingRooms.set(eventID, rooms);
@@ -101,7 +121,7 @@ function flattenWaitingRooms(data: any): WaitingRooms {
 
     // 组装返回结果
     let wr: WaitingRooms = { 
-        message: data.dateMessage,   // 公告消息（可能为空）
+        message: data.dateMessage,
         waitingRooms: waitingRooms 
     };
     return wr;
