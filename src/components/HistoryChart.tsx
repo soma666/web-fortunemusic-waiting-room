@@ -55,16 +55,23 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
     );
   }
 
+  /** Recharts Tooltip 的 payload 条目 */
+  interface TooltipEntry {
+    name: string;
+    value: number | null;
+    color: string;
+  }
+
   /**
    * 自定义 Tooltip 组件
    * 鼠标悬停时显示详细数据
    */
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: TooltipEntry[]; label?: string }) => {
     if (active && payload && payload.length) {
       return (
         <div className="bg-background border rounded-lg shadow-lg p-3">
           <p className="font-medium mb-2">{label}</p>
-          {payload.map((entry: any, index: number) => (
+          {payload.map((entry, index) => (
             <div key={index} className="flex items-center gap-2 text-sm">
               <div
                 className="w-3 h-3 rounded-full"
@@ -115,7 +122,7 @@ export function HistoryChart({ data, selectedMembers, currentIndex, yAxisMode }:
         {/* 图例 */}
         {selectedMembers.length > 0 && (
           <Legend
-            formatter={(value, entry: any) => {
+            formatter={(value) => {
               const member = selectedMembers.find(
                 (m) => m.name === value || m.id === value
               );

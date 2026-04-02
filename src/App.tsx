@@ -154,7 +154,6 @@ export function App() {
         // 获取所有活动事件
         let events = await fetchEvents();
         setEvents(events);
-        console.log("Fetched Events:", events);
 
         // 自动选择最近的活动
         let defaultEvent = findNearestEvent(events, current)!
@@ -165,12 +164,10 @@ export function App() {
         let k = defaultEvent.sessions.keys().next().value!;
         let defaultSessions = defaultEvent.sessions.get(k)!;
         setSelectedSession(defaultSessions);
-        console.log("Selected Default Event:", defaultEvent);
 
         // 提取所有成员信息
         let existedMembers = extractMembers(defaultEvent.sessions);
         setMembers(existedMembers);
-        console.log("Extracted Members:", existedMembers);
 
         // 获取等待室数据
         let wr = await fetchWaitingRooms(defaultSessions.id);
@@ -182,7 +179,6 @@ export function App() {
 
         setWaitingRooms(wr.waitingRooms);
         setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
-        console.log("Fetched Waiting Rooms:", wr);
 
         // 设置刷新时间（每20秒刷新一次）
         setLastUpdate(new Date());
@@ -212,7 +208,6 @@ export function App() {
     if (!targetSessionId) return;
 
     try {
-      console.log("Refreshing waiting rooms at:", new Date());
       const wr = await fetchWaitingRooms(targetSessionId);
 
       if (wr.message) {
@@ -223,7 +218,6 @@ export function App() {
 
       setWaitingRooms(wr.waitingRooms);
       setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
-      console.log("Refreshed Waiting Rooms:", wr);
 
       const records: HistoryBatchRecord[] = [];
       wr.waitingRooms.forEach((rooms, sid) => {
@@ -247,8 +241,6 @@ export function App() {
         const saved = await saveBatchHistoryRecords(records);
         if (!saved) {
           console.warn("Failed to save history records");
-        } else {
-          console.log("Saved history records:", records.length);
         }
       }
 
@@ -293,8 +285,6 @@ export function App() {
         }
       }
 
-      console.log("Selected Event from Navbar:", selectedEventData);
-      console.log("Updated Members:", updatedMembers);
     }
   }, [events]);
 
@@ -307,7 +297,6 @@ export function App() {
     if (selectedEvent) {
       const logoFileName = getArtistLogo(selectedEvent.artistName);
       updateBackgroundImage(logoFileName);
-      console.log("Background updated to:", logoFileName);
     }
   }, [selectedEvent?.id]);
 
@@ -390,7 +379,6 @@ export function App() {
             sessions={sessions}
             onEventSelect={(eventId: number) => {
               setSelectedSession(sessions.get(eventId) || null);
-              console.log("Selected Event ID:", eventId);
             }}
           />
         </div>
@@ -402,10 +390,7 @@ export function App() {
             lastUpdate={lastUpdate}
             nextRefreshTime={nextRefreshTime}
             loading={loading}
-            onManualRefresh={() => {
-              console.log("Manual refresh triggered");
-              refreshWaitingRooms();
-            }}
+            onManualRefresh={() => refreshWaitingRooms()}
             totalWaitingPeople={totalWaitingPeople}
           />
         </div>

@@ -69,9 +69,9 @@ export function HistoryPanel({
   /** 是否显示成员选择器 */
   const [showMemberSelector, setShowMemberSelector] = useState(false);
   /** 活动过滤ID */
-  const [filterEventId, setFilterEventId] = useState<number | undefined>();
+  const [filterEventId, setFilterEventId] = useState<number | undefined>(eventInfo?.id);
   /** 场次过滤ID */
-  const [filterSessionId, setFilterSessionId] = useState<number | undefined>();
+  const [filterSessionId, setFilterSessionId] = useState<number | undefined>(sessionInfo?.id);
 
   /** 当前播放位置索引 */
   const [currentIndex, setCurrentIndex] = useState(0);

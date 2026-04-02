@@ -25,7 +25,7 @@ interface WaitingRoomGridProps {
 }
 
 /** 内部房间数据结构 */
-interface room {
+interface Room {
   id: string;
   order: number;
   name: string;
@@ -49,8 +49,8 @@ function joinMemberWaitingRoom(
   currentSessionID: number,
   waitingRooms: Map<number, WaitingRoom[]>,
   members: Map<string, Member>
-): room[] {
-  let result: room[] = [];
+): Room[] {
+  let result: Room[] = [];
   
   for (let [sessionID, rooms] of waitingRooms) {
     // 只处理当前场次的数据
@@ -87,7 +87,6 @@ function joinMemberWaitingRoom(
  * 以网格形式展示所有成员的排队状态
  */
 export function WaitingRoomGrid({ currentSessionID, waitingRooms, members }: WaitingRoomGridProps) {
-  console.log("WaitingRoomGrid Props:", { currentSessionID, waitingRooms, members });
   const rooms = useMemo(
     () => joinMemberWaitingRoom(currentSessionID, waitingRooms, members),
     [currentSessionID, waitingRooms, members]
