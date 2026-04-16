@@ -48,18 +48,14 @@ interface WaitingRoomsAPIResponse {
 /**
  * 获取等待室数据
  * 
- * 开发环境：通过本地代理 /api/waitingrooms 访问
- * 生产环境：通过 corsproxy.io 绕过 CORS 限制
+ * 开发和生产环境都通过同域 /api/waitingrooms 访问。
+ * 在本地由 Bun 开发服务器代理，在 Vercel 上由 Serverless Function 代理。
  * 
  * @param eventID - 活动ID（场次ID）
  * @returns 等待室数据，包含公告消息和各成员的排队信息
  */
 export async function fetchWaitingRooms(eventID: number): Promise<WaitingRooms> {
-    // 根据环境选择 API 端点
-    const isProduction = process.env.NODE_ENV === 'production';
-    const link = isProduction 
-        ? "https://corsproxy.io/?https://meets.fortunemusic.app/lapi/v5/app/dateTimezoneMessages"
-        : "/api/waitingrooms"
+    const link = "/api/waitingrooms"
 
     try {
         const response = await fetch(link, {
@@ -72,7 +68,9 @@ export async function fetchWaitingRooms(eventID: number): Promise<WaitingRooms> 
         });
 
         if (!response.ok) {
-            throw new Error(`Failed to fetch waiting rooms: ${response.status} ${response.statusText}`);
+            const errorPayload = await response.json().catch(() => null);
+            const message = errorPayload?.error || `Failed to fetch waiting rooms: ${response.status} ${response.statusText}`;
+            throw new Error(message);
         }
 
         let resp = await response.json() as WaitingRoomsAPIResponse;

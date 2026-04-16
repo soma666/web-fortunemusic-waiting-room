@@ -115,22 +115,21 @@ const targetArtistNames = ["乃木坂46", "櫻坂46", "日向坂46", "=LOVE"];
 /**
  * 获取活动事件数据
  * 
- * 开发环境：通过本地代理 /api/events 访问
- * 生产环境：通过 corsproxy.io 绕过 CORS 限制
+ * 开发和生产环境都通过同域 /api/events 访问。
+ * 在本地由 Bun 开发服务器代理，在 Vercel 上由 Serverless Function 代理。
  * 
  * @returns 活动事件映射表（key: 活动ID, value: 活动列表）
  */
 export async function fetchEvents(): Promise<Map<number, Event[]>> {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const link = isProduction
-        ? "https://corsproxy.io/?https://api.fortunemusic.app/v1/appGetEventData/"
-        : "/api/events"
+    const link = "/api/events"
 
     try {
         const response = await fetch(link);
 
         if (!response.ok) {
-            throw new Error(`API error: ${response.status} ${response.statusText}`);
+            const errorPayload = await response.json().catch(() => null);
+            const message = errorPayload?.error || `API error: ${response.status} ${response.statusText}`;
+            throw new Error(message);
         }
 
         const data = await response.json();
