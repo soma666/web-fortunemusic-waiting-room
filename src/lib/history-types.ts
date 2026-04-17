@@ -106,3 +106,47 @@ export interface HistorySettings {
   playbackSpeed: number;       // 播放速度倍数
   retentionDays: number;       // 数据保留天数
 }
+
+// ========== 浏览模式类型 ==========
+
+/**
+ * 日期摘要 - 用于日期列表展示
+ * 对应 mode=days 返回的每一项
+ */
+export interface DaySummary {
+  day: string;                 // yyyy-MM-dd (JST)
+  eventCount: number;          // 当天活动数量
+  sessionCount: number;        // 当天场次数量
+  totalRecords: number;        // 当天总记录数
+}
+
+/**
+ * 日内活动/场次条目 - 用于某日活动列表展示
+ * 对应 mode=events 返回的每一项
+ */
+export interface DayEventSummary {
+  eventId: number;
+  eventName: string;
+  sessionId: number;
+  sessionName: string;
+  recordCount: number;         // 该活动当天的记录数
+  memberCount: number;         // 该活动当天的成员数
+  lastUpdated: number;         // 最后更新时间戳
+}
+
+/**
+ * 历史详情过滤条件
+ * 用于 mode=details 查询
+ */
+export interface HistoryDetailFilter {
+  day: string;                 // 必填：日期 (yyyy-MM-dd JST)
+  eventId?: number;
+  sessionId?: number;
+  memberIds?: string[];
+}
+
+/**
+ * 历史面板浏览阶段
+ * 控制面板 UI 当前显示的层级
+ */
+export type HistoryBrowsePhase = 'days' | 'events' | 'details';

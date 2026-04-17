@@ -16,6 +16,9 @@ import type {
   MemberStats,
   ChartDataPoint,
   HistorySettings,
+  DaySummary,
+  DayEventSummary,
+  HistoryDetailFilter,
 } from './history-types';
 
 /** API 基础路径 */
@@ -351,4 +354,67 @@ export function defaultSettings(): HistorySettings {
     playbackSpeed: 1,     // 默认播放速度 1x
     retentionDays: 7,     // 默认保留 7 天
   };
+}
+
+// ========== 浏览模式 API ==========
+
+/**
+ * 获取有历史数据的日期列表
+ * 调用 mode=days 查询
+ * 
+ * @returns 日期摘要数组（按日期降序）
+ */
+export async function fetchAvailableDays(): Promise<DaySummary[]> {
+  try {
+    const result = await apiRequest<{ days: DaySummary[] }>('/history?mode=days');
+    return result.days;
+  } catch (error) {
+    console.error('Failed to fetch available days:', error);
+    return [];
+  }
+}
+
+/**
+ * 获取某日内的活动/场次摘要列表
+ * 调用 mode=events 查询
+ * 
+ * @param day - 日期字符串 (yyyy-MM-dd, JST)
+ * @returns 活动摘要数组
+ */
+export async function fetchDayEvents(day: string): Promise<DayEventSummary[]> {
+  try {
+    const result = await apiRequest<{ day: string; events: DayEventSummary[] }>(
+      `/history?mode=events&day=${encodeURIComponent(day)}`
+    );
+    return result.events;
+  } catch (error) {
+    console.error('Failed to fetch day events:', error);
+    return [];
+  }
+}
+
+/**
+ * 获取某日某活动的详细时间序列
+ * 调用 mode=details 查询
+ * 
+ * @param filter - 详情过滤条件（必须包含 day）
+ * @returns 历史记录数组
+ */
+export async function fetchDayDetails(filter: HistoryDetailFilter): Promise<HistoryRecord[]> {
+  const params = new URLSearchParams();
+  params.set('mode', 'details');
+  params.set('day', filter.day);
+  if (filter.eventId) params.set('eventId', filter.eventId.toString());
+  if (filter.sessionId) params.set('sessionId', filter.sessionId.toString());
+  if (filter.memberIds?.length) params.set('memberIds', filter.memberIds.join(','));
+
+  try {
+    const result = await apiRequest<{ day: string; records: HistoryRecord[]; count: number }>(
+      `/history?${params.toString()}`
+    );
+    return result.records;
+  } catch (error) {
+    console.error('Failed to fetch day details:', error);
+    return [];
+  }
 }
