@@ -1,5 +1,5 @@
 import { Card, CardTitle } from './ui/card';
-import { Clock, Users } from 'lucide-react';
+import { Clock, Users, Timer } from 'lucide-react';
 import { getPeopleCountColors, getWaitingTimeColors } from '@/lib/status-colors';
 import { formatMS } from '@/utils/date';
 import { type WaitingRoom } from '@/api/fortunemusic/waitingRooms';
@@ -18,6 +18,7 @@ interface room {
   thumbnailUrl: string;
   waitingCount: number;
   waitingTime: number;
+  avgWaitTime: number;
 }
 
 function joinMemberWaitingRoom(
@@ -32,6 +33,9 @@ function joinMemberWaitingRoom(
   for (const room of rooms) {
     const member = members.get(room.ticketCode);
     if (member) {
+      const avgWaitTime = room.peopleCount > 0
+        ? Math.floor(room.waitingTime / room.peopleCount)
+        : 0;
       result.push({
         id: room.ticketCode,
         order: member.order,
@@ -39,6 +43,7 @@ function joinMemberWaitingRoom(
         thumbnailUrl: member.thumbnailUrl,
         waitingCount: room.peopleCount,
         waitingTime: room.waitingTime,
+        avgWaitTime,
       });
     }
   }
@@ -66,6 +71,12 @@ export function WaitingRoomGrid({ currentSessionID, waitingRooms, members }: Wai
             <Clock className="h-4 w-4" />
             <span className="text-base lg:text-lg font-semibold font-mono">
               {formatMS(room.waitingTime)}
+            </span>
+          </div>
+          <div className={`flex items-center justify-center gap-1 text-xs ${room.waitingCount > 0 ? 'text-status-yellow' : 'text-text-subtitle'}`}>
+            <Timer className="h-3 w-3" />
+            <span className="font-semibold font-mono">
+              {room.waitingCount > 0 ? formatMS(room.avgWaitTime) : '--:--'}
             </span>
           </div>
         </Card>

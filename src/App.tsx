@@ -180,6 +180,7 @@ export function App() {
             sessionName: selectedSession?.name || '',
             waitingCount: room.peopleCount,
             waitingTime: room.waitingTime,
+            avgWaitTime: room.peopleCount > 0 ? Math.floor(room.waitingTime / room.peopleCount) : 0,
           });
         });
       });

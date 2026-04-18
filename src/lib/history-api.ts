@@ -176,10 +176,12 @@ export function calculateChartData(
             point[memberId] = record.waitingTime;
             break;
           case 'avgWaitingTime':
-            // 平均等候时间 = 总等候时间 / 排队人数
-            point[memberId] = record.waitingCount > 0
-              ? Math.round(record.waitingTime / record.waitingCount)
-              : 0;
+            // 优先使用存储的 avgWaitTime，否则从 waitingTime/waitingCount 动态计算
+            point[memberId] = record.avgWaitTime !== undefined && record.avgWaitTime !== null
+              ? record.avgWaitTime
+              : (record.waitingCount > 0
+                ? Math.round(record.waitingTime / record.waitingCount)
+                : 0);
             break;
         }
       } else {

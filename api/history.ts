@@ -49,6 +49,7 @@ interface HistoryRecord {
   timestamp: number;
   waitingCount: number;
   waitingTime: number;
+  avgWaitTime: number;
 }
 
 /** 查询过滤条件 */
@@ -438,6 +439,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
         timestamp,
         waitingCount: record.waitingCount,
         waitingTime: record.waitingTime,
+        avgWaitTime: record.avgWaitTime ?? (record.waitingCount > 0 ? Math.floor(record.waitingTime / record.waitingCount) : 0),
       };
       pipeline.set(key, historyRecord, { ex: DEFAULT_TTL_SECONDS });
       memberIdsInBatch.add(record.memberId);

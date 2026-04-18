@@ -21,6 +21,7 @@ export interface HistoryRecord {
   timestamp: number;           // 记录时间戳（毫秒）
   waitingCount: number;        // 排队人数
   waitingTime: number;         // 等候时间（秒）
+  avgWaitTime: number;         // 平均等候时间（秒）= waitingTime / waitingCount
 }
 
 /**
@@ -37,6 +38,7 @@ export interface HistoryBatchRecord {
   sessionName: string;
   waitingCount: number;
   waitingTime: number;
+  avgWaitTime: number;
 }
 
 /**
