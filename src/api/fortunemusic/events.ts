@@ -16,6 +16,7 @@ import { toZonedTime } from "date-fns-tz";
 /** 活动事件 - 应用层使用的结构化数据 */
 export interface Event {
     id: number;
+    uniqueId: string;
     name: string;
     artistName: string;
     photoUrl: string;
@@ -252,8 +253,10 @@ export function flatternEventArray(artistName: string, eventArray: EventArray[])
             // 只保留今天或未来的活动
             if (isAfter(eventDt, now) || eventDt.toDateString() === now.toDateString()) {
                 let sessions = flatternTimezoneArray(date.dateDate, date.timeZoneArray);
+                let firstSessionId = sessions.keys().next().value;
                 let currentEvent: Event = {
                     id: event.evtId,
+                    uniqueId: firstSessionId !== undefined ? `${event.evtId}-${firstSessionId}` : `${event.evtId}`,
                     name: eventName,
                     artistName: artistName,
                     photoUrl: eventPhotoUrl,

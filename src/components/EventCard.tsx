@@ -1,50 +1,36 @@
-/**
- * EventCard.tsx - 活动信息卡片组件
- * 
- * 显示当前选中活动的基本信息：
- * - 活动名称（带闪烁动画效果）
- * - 活动日期
- */
-
-import { Card } from '@/components/ui/card';
-import { ShimmeringText } from "@/components/ui/shadcn-io/shimmering-text";
-
-// ========== 组件接口 ==========
+import { Calendar, Sparkles } from 'lucide-react';
+import { format } from 'date-fns';
 
 interface EventCardProps {
-    name: string;       // 活动名称
-    date: string;       // 活动日期（格式化后的字符串）
+  name: string;
+  date: Date | undefined;
 }
 
-// ========== 主组件 ==========
+function formatEventDate(date: Date): string {
+  return format(date, "yyyy.MM.dd '('EEE')'");
+}
 
-/**
- * 活动信息卡片
- * 使用闪烁文字效果突出显示活动名称
- */
 export function EventCard({ name, date }: EventCardProps) {
-    return (
-        <Card>
-            <div className="flex flex-col items-start justify-center gap-2 p-6 text-left">
-                {/* 活动名称（带波浪动画） */}
-                <div className="text-left">
-                    <ShimmeringText
-                        text={name}
-                        duration={2}
-                        wave={true}
-                        shimmeringColor="hsl(var(--primary))"
-                    />
-                </div>
-                {/* 活动日期 */}
-                <div className="text-left text-muted-foreground">
-                    <ShimmeringText
-                        text={date}
-                        duration={2}
-                        wave={false}
-                        shimmeringColor="hsl(var(--primary))"
-                    />
-                </div>
-            </div>
-        </Card>
-    );
+  return (
+    <div className="rounded-2xl p-4 lg:p-6 bg-bg-card border border-border">
+      <div className="flex flex-col gap-1.5">
+        {/* Date row */}
+        <div className="flex items-center gap-2">
+          <Calendar size={16} className="text-text-muted" />
+          <span className="text-sm font-medium font-mono text-text-muted">
+            {date ? formatEventDate(date) : '---'}
+          </span>
+        </div>
+
+        {/* Event name row */}
+        <div className="flex items-center gap-3">
+          <span
+            className="text-lg lg:text-heading font-bold font-mono bg-gradient-to-r from-accent via-accent-light to-accent bg-clip-text text-transparent"
+          >
+            {name || '---'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }

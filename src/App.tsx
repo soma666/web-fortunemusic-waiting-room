@@ -1,47 +1,32 @@
 /**
  * App.tsx - 主应用组件
  * 
- * 这是 FortuneMusic 等待室应用的核心组件，负责：
- * 1. 获取和管理活动事件数据
- * 2. 处理用户选择的活动/场次
- * 3. 定时刷新等待室数据
- * 4. 保存历史记录到后端
- * 5. 根据艺人切换背景图片
+ * Sidebar + Main 布局，支持桌面端可调整侧边栏和移动端覆盖式侧边栏。
  */
 
 import { fetchEvents, type Session, type Event, type Member } from "@/api/fortunemusic/events";
-import { fetchWaitingRooms, type WaitingRoom, type WaitingRooms } from "@/api/fortunemusic/waitingRooms";
+import { fetchWaitingRooms, type WaitingRoom } from "@/api/fortunemusic/waitingRooms";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SessionSelector } from "@/components/SessionSelector";
 import { findNearestEvent } from "@/lib/aggregator";
 import { EventCard } from "@/components/EventCard";
-import { StatsCards } from "@/components/StatsCards";
+import { StatsBar } from "@/components/StatsBar";
 import { WaitingRoomGrid } from "@/components/WaitingRoomGrid";
-import { formatDate } from "@/utils/date";
+import { Sidebar } from "@/components/Sidebar";
 import { saveBatchHistoryRecords } from "@/lib/history-api";
 import type { HistoryBatchRecord } from "@/lib/history-types";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { REFRESH_INTERVAL_MS, POLL_CHECK_INTERVAL_MS } from "@/lib/constants";
-
-import {
-  Banner,
-  BannerClose,
-  BannerIcon,
-  BannerTitle,
-} from '@/components/ui/shadcn-io/banner';
-import { CircleAlert } from 'lucide-react';
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { Menu, X } from 'lucide-react';
 
 import "./index.css";
-import nogizaka46Logo from "./assets/nogizaka46_logo.svg";
-import sakurazaka46Logo from "./assets/sakurazaka46_logo.svg";
-import hinatazaka46Logo from "./assets/hinatazaka46_logo.svg";
-import { Navbar02 } from "./components/ui/shadcn-io/navbar-02";
 
-/**
- * 从多个场次中提取所有成员信息
- * @param sessions - 场次映射表
- * @returns 成员映射表（key: 成员ID, value: 成员信息）
- */
+const MIN_SIDEBAR_WIDTH = 240;
+const MAX_SIDEBAR_WIDTH = 600;
+const DEFAULT_SIDEBAR_WIDTH = 300;
+const REFRESH_INTERVAL = 10; // seconds
+
 function extractMembers(sessions: Map<number, Session>): Map<string, Member> {
   let members = new Map<string, Member>();
   sessions.forEach((session) => {
@@ -52,11 +37,6 @@ function extractMembers(sessions: Map<number, Session>): Map<string, Member> {
   return members;
 }
 
-/**
- * 计算所有等待室的总排队人数
- * @param waitingRooms - 等待室映射表
- * @returns 总排队人数
- */
 function calculateTotalWaitingPeople(waitingRooms: Map<number, WaitingRoom[]>): number {
   let total = 0;
   waitingRooms.forEach((rooms) => {
@@ -67,125 +47,104 @@ function calculateTotalWaitingPeople(waitingRooms: Map<number, WaitingRoom[]>): 
   return total;
 }
 
-/**
- * 根据艺人名称获取对应的 Logo 图片 URL
- * @param artistName - 艺人名称
- * @returns Logo URL 或 null
- */
-function getArtistLogo(artistName: string): string | null {
-  const logoMap: Record<string, string> = {
-    '乃木坂46': nogizaka46Logo,
-    '櫻坂46': sakurazaka46Logo,
-    '日向坂46': hinatazaka46Logo,
-  };
-  return logoMap[artistName] || null;
-}
-
-/**
- * 更新页面背景图片
- * 通过设置 CSS 自定义属性来切换背景
- * @param logoUrl - Logo URL 或 null（清除背景）
- */
-function updateBackgroundImage(logoUrl: string | null) {
-  if (logoUrl) {
-    document.documentElement.style.setProperty('--background-logo', `url("${logoUrl}")`);
-  } else {
-    document.documentElement.style.setProperty('--background-logo', 'none');
-  }
-}
-
-/**
- * 主应用组件
- */
 export function App() {
-  // ========== 状态定义 ==========
-  
-  /** 加载状态 */
+  const isMobile = useIsMobile();
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isDragging = useRef(false);
+
+  // ========== Sidebar resize logic ==========
+  const handleDragStart = useCallback(() => {
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    if (isMobile) return;
+
+    const handleMove = (clientX: number) => {
+      if (!isDragging.current) return;
+      const newWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, clientX));
+      setSidebarWidth(newWidth);
+    };
+
+    const handleEnd = () => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    const onMouseMove = (e: MouseEvent) => handleMove(e.clientX);
+    const onTouchMove = (e: TouchEvent) => handleMove(e.touches[0].clientX);
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', handleEnd);
+    document.addEventListener('touchmove', onTouchMove);
+    document.addEventListener('touchend', handleEnd);
+
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', handleEnd);
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', handleEnd);
+    };
+  }, [isMobile]);
+
+  // Lock body scroll when mobile sidebar is open
+  useEffect(() => {
+    if (isMobile && sidebarOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [isMobile, sidebarOpen]);
+
+  // ========== Data state ==========
   const [loading, setLoading] = useState(true);
-  /** 错误信息 */
   const [error, setError] = useState<string | null>(null);
-
-  /** 所有活动事件（按事件ID分组） */
   const [events, setEvents] = useState<Map<number, Event[]>>(new Map());
-  /** 当前选中的活动事件 */
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-
-  /** 当前活动的所有场次 */
   const [sessions, setSessions] = useState<Map<number, Session>>(new Map());
-  /** 当前选中的场次 */
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
-
-  /** 等待室数据（按场次ID分组） */
   const [waitingRooms, setWaitingRooms] = useState<Map<number, WaitingRoom[]>>(new Map());
-  /** 总排队人数 */
   const [totalWaitingPeople, setTotalWaitingPeople] = useState<number>(0);
-
-  /** 所有成员信息 */
   const [members, setMembers] = useState<Map<string, Member>>(new Map());
-
-  /** 公告消息（如活动取消等通知） */
   const [notice, setNotice] = useState<string | null>(null);
-
-  /** 上次更新时间 */
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
-  /** 下次刷新时间 */
   const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + REFRESH_INTERVAL_MS));
-  /** 下次刷新时间的 ref，用于定时器中读取最新值 */
   const nextRefreshTimeRef = useRef<Date>(nextRefreshTime);
-  /** 是否显示历史面板 */
+  const [refreshCountdown, setRefreshCountdown] = useState<number>(REFRESH_INTERVAL);
   const [showHistory, setShowHistory] = useState(false);
 
-  // ========== 初始化数据加载 ==========
-  
-  /**
-   * 组件挂载时加载初始数据
-   * 1. 获取所有活动事件
-   * 2. 自动选择最近的活动
-   * 3. 加载默认场次的等待室数据
-   */
+  // ========== Initial data load ==========
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
         setError(null);
-
         let current = new Date();
-        
-        // 获取所有活动事件
         let events = await fetchEvents();
         setEvents(events);
-
-        // 自动选择最近的活动
-        let defaultEvent = findNearestEvent(events, current)!
+        let defaultEvent = findNearestEvent(events, current)!;
         setSelectedEvent(defaultEvent);
         setSessions(defaultEvent.sessions);
-
-        // 选择第一个场次
         let k = defaultEvent.sessions.keys().next().value!;
         let defaultSessions = defaultEvent.sessions.get(k)!;
         setSelectedSession(defaultSessions);
-
-        // 提取所有成员信息
         let existedMembers = extractMembers(defaultEvent.sessions);
         setMembers(existedMembers);
-
-        // 获取等待室数据
         let wr = await fetchWaitingRooms(defaultSessions.id);
-        if (wr.message) {
-          setNotice(wr.message)
-        } else {
-          setNotice(null);
-        };
-
+        if (wr.message) { setNotice(wr.message); } else { setNotice(null); }
         setWaitingRooms(wr.waitingRooms);
         setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
-
-        // 设置刷新时间（每20秒刷新一次）
         setLastUpdate(new Date());
         const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
         setNextRefreshTime(nextTime);
         nextRefreshTimeRef.current = nextTime;
-
+        setRefreshCountdown(REFRESH_INTERVAL);
       } catch (err) {
         console.error("Failed to load events:", err);
         setError(err instanceof Error ? err.message : "Failed to load events");
@@ -196,26 +155,14 @@ export function App() {
     loadData();
   }, []);
 
-  // ========== 数据刷新逻辑 ==========
-  
-  /**
-   * 刷新等待室数据
-   * 同时保存历史记录到后端存储
-   * @param sessionId - 可选的场次ID，不传则使用当前选中场次
-   */
+  // ========== Refresh waiting rooms ==========
   const refreshWaitingRooms = useCallback(async (sessionId?: number) => {
     const targetSessionId = sessionId || selectedSession?.id;
     if (!targetSessionId) return;
 
     try {
       const wr = await fetchWaitingRooms(targetSessionId);
-
-      if (wr.message) {
-        setNotice(wr.message)
-      } else {
-        setNotice(null);
-      };
-
+      if (wr.message) { setNotice(wr.message); } else { setNotice(null); }
       setWaitingRooms(wr.waitingRooms);
       setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
 
@@ -236,176 +183,193 @@ export function App() {
           });
         });
       });
-      
+
       if (records.length > 0) {
         const saved = await saveBatchHistoryRecords(records);
-        if (!saved) {
-          console.warn("Failed to save history records");
-        }
+        if (!saved) console.warn("Failed to save history records");
       }
 
       setLastUpdate(new Date());
       const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
       setNextRefreshTime(nextTime);
       nextRefreshTimeRef.current = nextTime;
+      setRefreshCountdown(REFRESH_INTERVAL);
     } catch (err) {
       console.error("Failed to refresh waiting rooms:", err);
     }
   }, [selectedSession?.id, selectedEvent?.id, selectedEvent?.name, selectedSession?.name, members]);
 
-  // ========== 事件选择处理 ==========
-  
-  /**
-   * 处理导航栏中的活动选择
-   * 切换活动后自动选择第一个场次
-   * @param eventId - 活动ID字符串
-   */
-  const handleEventSelect = useCallback((eventId: string) => {
+  // ========== Event selection (sidebar) ==========
+  const handleEventSelect = useCallback((uniqueId: string) => {
     let foundEvent: Event | null = null;
     events.forEach((eventList: Event[]) => {
-      const event = eventList.find((e: Event) => e.id.toString() === eventId);
-      if (event) {
-        foundEvent = event;
-      }
+      const event = eventList.find((e: Event) => e.uniqueId === uniqueId);
+      if (event) foundEvent = event;
     });
 
     if (foundEvent) {
       const selectedEventData: Event = foundEvent;
       setSelectedEvent(selectedEventData);
       setSessions(selectedEventData.sessions);
-
       const updatedMembers = extractMembers(selectedEventData.sessions);
       setMembers(updatedMembers);
-
       const firstSessionKey = selectedEventData.sessions.keys().next().value;
       if (firstSessionKey !== undefined) {
         const firstSession = selectedEventData.sessions.get(firstSessionKey);
-        if (firstSession) {
-          setSelectedSession(firstSession);
-        }
+        if (firstSession) setSelectedSession(firstSession);
       }
-
     }
   }, [events]);
 
-  // ========== 副作用处理 ==========
-  
-  /**
-   * 活动切换时更新背景图片
-   */
-  useEffect(() => {
-    if (selectedEvent) {
-      const logoFileName = getArtistLogo(selectedEvent.artistName);
-      updateBackgroundImage(logoFileName);
-    }
-  }, [selectedEvent?.id]);
+  const handleEventSelectMobile = useCallback((uniqueId: string) => {
+    handleEventSelect(uniqueId);
+    if (isMobile) setSidebarOpen(false);
+  }, [handleEventSelect, isMobile]);
 
-  /**
-   * 场次切换时刷新等待室数据
-   */
+  const handleSessionSelect = useCallback((sessionId: number) => {
+    setSelectedSession(sessions.get(sessionId) || null);
+  }, [sessions]);
+
+  // ========== Session change → refresh ==========
   useEffect(() => {
     if (selectedSession && !loading) {
       refreshWaitingRooms(selectedSession.id);
     }
   }, [selectedSession?.id]);
 
-  /**
-   * 自动刷新定时器
-   * 使用 useRef 读取最新的 nextRefreshTime，避免 frequency 重建 interval
-   */
+  // ========== Auto-refresh countdown ==========
   useEffect(() => {
     if (loading || !selectedSession) return;
-    
+
     const interval = setInterval(() => {
       const now = new Date();
       if (now >= nextRefreshTimeRef.current) {
         refreshWaitingRooms();
+      } else {
+        const remaining = Math.max(0, Math.ceil((nextRefreshTimeRef.current.getTime() - now.getTime()) / 1000));
+        setRefreshCountdown(remaining);
       }
     }, POLL_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loading, selectedSession, refreshWaitingRooms]);
 
-  // ========== 渲染 ==========
-  
+  // ========== Render ==========
   return (
-    <div className="min-h-screen relative">
-      {/* 导航栏 */}
-      <Navbar02 
-        events={events} 
-        onEventSelect={handleEventSelect}
-        onOpenHistory={() => setShowHistory(true)}
-      />
+    <div className="flex h-screen overflow-hidden">
+      {/* Mobile: overlay sidebar + backdrop */}
+      {isMobile && (
+        <>
+          {sidebarOpen && (
+            <div
+              className="fixed inset-0 z-40 bg-black/60"
+              onClick={() => setSidebarOpen(false)}
+            />
+          )}
+          <div
+            className={`fixed inset-y-0 left-0 z-50 w-[280px] transform transition-transform duration-200 ease-in-out ${
+              sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
+          >
+            <Sidebar
+              events={events}
+              activeEventId={selectedEvent?.uniqueId}
+              onEventSelect={handleEventSelectMobile}
+              width={280}
+              onOpenHistory={() => { setSidebarOpen(false); setShowHistory(true); }}
+            />
+          </div>
+        </>
+      )}
 
-      {/* 主内容区域 */}
-      <div className="container mx-auto px-4 md:px-6 lg:px-8 max-w-7xl">
-        {/* 错误提示 */}
+      {/* Desktop: sidebar + resize handle */}
+      {!isMobile && (
+        <>
+          <Sidebar
+            events={events}
+            activeEventId={selectedEvent?.uniqueId}
+            onEventSelect={handleEventSelect}
+            width={sidebarWidth}
+            onOpenHistory={() => setShowHistory(true)}
+          />
+          <div
+            onMouseDown={handleDragStart}
+            onTouchStart={handleDragStart}
+            className="shrink-0 w-1 cursor-col-resize bg-border hover:bg-accent/25 active:bg-accent/40 transition-colors"
+          />
+        </>
+      )}
+
+      {/* Main content */}
+      <main className="flex-1 flex flex-col items-center overflow-y-auto bg-bg-primary">
+        {/* Mobile top bar */}
+        {isMobile && (
+          <div className="sticky top-0 z-30 flex items-center w-full px-4 py-3 bg-bg-secondary border-b border-border">
+            <button
+              onClick={() => setSidebarOpen((o) => !o)}
+              className="flex items-center justify-center w-11 h-11 rounded-lg bg-bg-card border border-border cursor-pointer"
+              aria-label="Toggle sidebar"
+            >
+              {sidebarOpen ? <X size={20} className="text-text-primary" /> : <Menu size={20} className="text-text-primary" />}
+            </button>
+          </div>
+        )}
+
+        {/* Error */}
         {error && (
-          <div className="mt-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
+          <div className="mx-4 lg:mx-8 mt-4 lg:mt-8 p-4 rounded-lg bg-error-bg border border-error text-error">
             <p className="font-semibold">Error loading events:</p>
             <p className="text-sm">{error}</p>
           </div>
         )}
 
-        {/* 加载提示 */}
+        {/* Loading */}
         {loading && (
-          <div className="mt-6 p-4">
-            <p className="text-muted-foreground">Loading events...</p>
+          <div className="mx-4 lg:mx-8 mt-4 lg:mt-8 p-4">
+            <p className="text-text-muted">Loading events...</p>
           </div>
         )}
 
-        {/* 公告横幅 */}
+        {/* Notice */}
         {notice && (
-          <div className="mt-6">
-            <Banner>
-              <BannerIcon icon={CircleAlert} />
-              <BannerTitle>{notice}</BannerTitle>
-              <BannerClose />
-            </Banner>
+          <div className="mx-4 lg:mx-8 mt-4 lg:mt-6 p-3 rounded-lg text-sm bg-active-bg border border-accent/25 text-accent">
+            {notice}
           </div>
         )}
 
-        {/* 活动信息卡片 */}
-        <div className="mt-6">
+        {/* Event Card */}
+        <div className="px-4 lg:px-12 pt-4 lg:pt-8 w-full max-w-[1100px]">
           <EventCard
-            name={selectedEvent?.name!}
-            date={selectedEvent?.date ? formatDate(selectedEvent.date) : ''}
+            name={selectedEvent?.name || ''}
+            date={selectedEvent?.date}
           />
         </div>
 
-        {/* 场次选择器 */}
-        <div className="mt-6">
-          <SessionSelector
-            id={selectedSession?.id || null}
-            sessions={sessions}
-            onEventSelect={(eventId: number) => {
-              setSelectedSession(sessions.get(eventId) || null);
-            }}
-          />
-        </div>
+        {/* Grid Section */}
+        <div className="flex-1 flex flex-col items-center gap-3 lg:gap-4 px-3 lg:px-8 py-4 lg:py-6 mt-3 lg:mt-6 w-full max-w-[1100px]">
+          {/* Session + Stats row */}
+          <div className="flex flex-col-reverse lg:flex-row items-center lg:justify-between gap-2 w-full max-w-[1030px]">
+            <SessionSelector
+              id={selectedSession?.id || null}
+              sessions={sessions}
+              onSessionSelect={handleSessionSelect}
+            />
+            <StatsBar
+              session={selectedSession}
+              participant={totalWaitingPeople}
+              refreshCountdown={refreshCountdown}
+            />
+          </div>
 
-        {/* 统计卡片 */}
-        <div className="mt-6">
-          <StatsCards
-            session={selectedSession!}
-            lastUpdate={lastUpdate}
-            nextRefreshTime={nextRefreshTime}
-            loading={loading}
-            onManualRefresh={() => refreshWaitingRooms()}
-            totalWaitingPeople={totalWaitingPeople}
-          />
-        </div>
-
-        {/* 等待室网格 */}
-        <div className="mt-6 mb-8">
+          {/* Waiting Room Grid */}
           <WaitingRoomGrid
             currentSessionID={selectedSession?.id || 0}
             waitingRooms={waitingRooms}
             members={members}
           />
         </div>
-      </div>
+      </main>
 
-      {/* 历史数据面板（弹窗） */}
+      {/* History Panel */}
       <HistoryPanel
         isOpen={showHistory}
         onClose={() => setShowHistory(false)}
