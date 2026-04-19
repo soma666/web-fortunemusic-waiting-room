@@ -115,10 +115,18 @@ function parseMember(m: unknown): HistoryRecord {
 // ========== 主处理函数 ==========
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'GET') return handleGet(req, res);
-  if (req.method === 'POST') return handlePost(req, res);
-  if (req.method === 'DELETE') return handleDelete(req, res);
-  res.status(405).json({ error: 'Method not allowed' });
+  res.setHeader('X-API-Version', 'v2-sorted-sets');
+  try {
+    if (req.method === 'GET') return await handleGet(req, res);
+    if (req.method === 'POST') return await handlePost(req, res);
+    if (req.method === 'DELETE') return await handleDelete(req, res);
+    res.status(405).json({ error: 'Method not allowed' });
+  } catch (error) {
+    console.error('Unhandled error in handler:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error', message: String(error) });
+    }
+  }
 }
 
 // ========== GET ==========
@@ -131,14 +139,16 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   const { mode } = req.query;
   try {
     switch (mode) {
-      case 'days': return handleGetDays(req, res);
-      case 'events': return handleGetDayEvents(req, res);
-      case 'details': return handleGetDayDetails(req, res);
-      default: return handleGetLegacy(req, res);
+      case 'days': return await handleGetDays(req, res);
+      case 'events': return await handleGetDayEvents(req, res);
+      case 'details': return await handleGetDayDetails(req, res);
+      default: return await handleGetLegacy(req, res);
     }
   } catch (error) {
     console.error('KV get error:', error);
-    res.status(500).json({ error: 'Failed to fetch history' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to fetch history', message: String(error) });
+    }
   }
 }
 
@@ -204,7 +214,9 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
     // 精准查询：直接读取一个 sorted set key
     const key = tsKey(day, parseInt(eventId as string), parseInt(sessionId as string));
     const members = await getKv().zrange(key, 0, -1);
-    allRecords = (members as unknown[]).map(parseMember);
+    if (Array.isArray(members) && members.length > 0) {
+      allRecords = members.map((m: unknown) => parseMember(m));
+    }
   } else {
     // 模糊查询：扫描 day 下的 sorted set keys
     const pattern = eventId
@@ -212,8 +224,9 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
       : `history:ts:${day}:*`;
     const keys = await getKv().keys(pattern);
 
-    for (const key of keys as string[]) {
+    for (const key of (keys || []) as string[]) {
       const members = await getKv().zrange(key, 0, -1);
+      if (!Array.isArray(members)) continue;
       for (const m of members as unknown[]) {
         allRecords.push(parseMember(m));
       }
@@ -246,7 +259,7 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
 
     // 扫描 sorted set keys
     const keys = await getKv().keys('history:ts:*');
-    if (keys.length === 0) {
+    if (!keys || keys.length === 0) {
       res.status(200).json({ records: [], count: 0 });
       return;
     }
@@ -262,6 +275,7 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
       if (parsedSessionId && keySessionId !== parsedSessionId) continue;
 
       const members = await getKv().zrange(key as string, 0, -1);
+      if (!Array.isArray(members)) continue;
       for (const m of members as unknown[]) {
         const record = parseMember(m);
         if (parsedMemberIds && !parsedMemberIds.includes(record.memberId)) continue;
