@@ -24,7 +24,10 @@ import { Redis } from '@upstash/redis';
 let _kv: Redis | null = null;
 function getKv(): Redis {
   if (!_kv) {
-    _kv = Redis.fromEnv();
+    _kv = new Redis({
+      url: process.env.KV_REST_API_URL!,
+      token: process.env.KV_REST_API_TOKEN!,
+    });
   }
   return _kv;
 }
@@ -116,7 +119,7 @@ function dayIndexKey(day: string): string {
 // ========== 工具函数 ==========
 
 function isValidKvConfig(): boolean {
-  return !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+  return !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 }
 
 function validateRecord(record: any): string | null {
