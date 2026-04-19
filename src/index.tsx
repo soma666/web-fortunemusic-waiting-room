@@ -10,6 +10,14 @@
 
 import { serve } from "bun";
 import index from "./index.html";
+import {
+  handleGetDays,
+  handleGetDayEvents,
+  handleGetDayDetails,
+  handleGetLegacy,
+  handlePost,
+  handleDelete,
+} from "./lib/local-history-db";
 
 const server = serve({
   // 开发模式配置
@@ -103,6 +111,62 @@ const server = serve({
       },
     },
     
+    /**
+     * 本地历史数据 API
+     * 使用 bun:sqlite 存储，替代 Vercel KV
+     */
+    "/api/history": {
+      async GET(req) {
+        const url = new URL(req.url);
+        const mode = url.searchParams.get('mode');
+        const day = url.searchParams.get('day') || '';
+
+        switch (mode) {
+          case 'days':
+            return handleGetDays();
+          case 'events':
+            return handleGetDayEvents(day);
+          case 'details': {
+            const eventId = url.searchParams.get('eventId');
+            const sessionId = url.searchParams.get('sessionId');
+            const memberIdsParam = url.searchParams.get('memberIds');
+            const limit = url.searchParams.get('limit');
+            return handleGetDayDetails(
+              day,
+              eventId ? parseInt(eventId) : undefined,
+              sessionId ? parseInt(sessionId) : undefined,
+              memberIdsParam ? memberIdsParam.split(',') : undefined,
+              limit ? parseInt(limit) : 1000,
+            );
+          }
+          default: {
+            const eventId = url.searchParams.get('eventId');
+            const sessionId = url.searchParams.get('sessionId');
+            const memberIdsParam = url.searchParams.get('memberIds');
+            const startTime = url.searchParams.get('startTime');
+            const endTime = url.searchParams.get('endTime');
+            const limit = url.searchParams.get('limit');
+            return handleGetLegacy(
+              eventId ? parseInt(eventId) : undefined,
+              sessionId ? parseInt(sessionId) : undefined,
+              memberIdsParam ? memberIdsParam.split(',') : undefined,
+              startTime ? parseInt(startTime) : undefined,
+              endTime ? parseInt(endTime) : undefined,
+              limit ? parseInt(limit) : 1000,
+            );
+          }
+        }
+      },
+      async POST(req) {
+        const body = await req.json() as { records?: unknown[] };
+        return handlePost(body.records as any[]);
+      },
+      async DELETE(req) {
+        const body = await req.json() as { beforeTimestamp?: number; memberIds?: string[] };
+        return handleDelete(body.beforeTimestamp, body.memberIds);
+      },
+    },
+
     /**
      * 默认路由 - 返回 index.html
      * 所有未匹配的路由都返回前端页面（支持 SPA 路由）
