@@ -20,7 +20,7 @@
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
-    "@vercel/kv": "^3.0.0",
+    "@upstash/redis": "^1.37.0",
     "axios": "^1.13.1",
     "bun-plugin-tailwind": "^0.0.15",
     "class-variance-authority": "^0.7.1",

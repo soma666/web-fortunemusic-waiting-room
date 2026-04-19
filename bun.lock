@@ -14,7 +14,7 @@
         "@radix-ui/react-slot": "^1.2.3",
         "@radix-ui/react-switch": "^1.2.6",
         "@radix-ui/react-use-controllable-state": "^1.2.2",
-        "@vercel/kv": "^3.0.0",
+        "@upstash/redis": "^1.37.0",
         "axios": "^1.13.1",
         "bun-plugin-tailwind": "^0.0.15",
         "class-variance-authority": "^0.7.1",
@@ -247,8 +247,6 @@
     "@vercel/build-utils": ["@vercel/build-utils@13.8.2", "https://registry.npmmirror.com/@vercel/build-utils/-/build-utils-13.8.2.tgz", { "dependencies": { "@vercel/python-analysis": "0.10.1" } }, "sha512-JSxGntOIq3JJA+w1CZ2w+QDocvW0JPtkkzTkGAa/pxmhE2/QnpCv15StI1Dpb4JJAtrC4zUmwMxKI9BgRdbPJw=="],
 
     "@vercel/error-utils": ["@vercel/error-utils@2.0.3", "https://registry.npmmirror.com/@vercel/error-utils/-/error-utils-2.0.3.tgz", {}, "sha512-CqC01WZxbLUxoiVdh9B/poPbNpY9U+tO1N9oWHwTl5YAZxcqXmmWJ8KNMFItJCUUWdY3J3xv8LvAuQv2KZ5YdQ=="],
-
-    "@vercel/kv": ["@vercel/kv@3.0.0", "https://registry.npmmirror.com/@vercel/kv/-/kv-3.0.0.tgz", { "dependencies": { "@upstash/redis": "^1.34.0" } }, "sha512-pKT8fRnfyYk2MgvyB6fn6ipJPCdfZwiKDdw7vB+HL50rjboEBHDVBEcnwfkEpVSp2AjNtoaOUH7zG+bVC/rvSg=="],
 
     "@vercel/nft": ["@vercel/nft@1.4.0", "https://registry.npmmirror.com/@vercel/nft/-/nft-1.4.0.tgz", { "dependencies": { "@mapbox/node-pre-gyp": "^2.0.0", "@rollup/pluginutils": "^5.1.3", "acorn": "^8.6.0", "acorn-import-attributes": "^1.9.5", "async-sema": "^3.1.1", "bindings": "^1.4.0", "estree-walker": "2.0.2", "glob": "^13.0.0", "graceful-fs": "^4.2.9", "node-gyp-build": "^4.2.2", "picomatch": "^4.0.2", "resolve-from": "^5.0.0" }, "bin": { "nft": "out/cli.js" } }, "sha512-rr7JVnI7YGjA4lngucrWjZ7eCOJZZQaDHB+5NRGOuNc+k4PU2Lb9PmYm8uBmW8qichF7WkR2RmwmhXHBhx6wzw=="],
 

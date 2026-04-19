@@ -1,34 +1,40 @@
 /**
  * api/history.ts - Vercel Serverless Function
  * 
- * 历史数据 API 端点，使用 Vercel KV 存储数据。
- * 
+ * 历史数据 API 端点，使�?Vercel KV 存储数据�? * 
  * 支持的操作：
- * - GET: 获取历史记录（支持过滤和浏览模式）
- *   - mode=days: 返回有数据的日期列表
+ * - GET: 获取历史记录（支持过滤和浏览模式�? *   - mode=days: 返回有数据的日期列表
  *   - mode=events: 返回某日内的活动/场次摘要
  *   - mode=details: 返回某日某活动的详细时间序列
  *   - (默认): 兼容旧版平面过滤查询
  * - POST: 批量保存历史记录（同时维护日级索引）
  * - DELETE: 删除历史记录
  * 
- * 环境变量要求：
- * - KV_REST_API_URL: KV REST API 地址
+ * 环境变量要求�? * - KV_REST_API_URL: KV REST API 地址
  * - KV_REST_API_TOKEN: 访问令牌
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { kv } from '@vercel/kv';
+import { Redis } from '@upstash/redis';
+
+/** Upstash Redis 客户端（惰性初始化�?*/
+let _kv: Redis | null = null;
+function getKv(): Redis {
+  if (!_kv) {
+    _kv = Redis.fromEnv();
+  }
+  return _kv;
+}
 
 // ========== 常量定义 ==========
 
-/** 每条记录的默认 TTL（秒）：30 天 */
+/** 每条记录的默�?TTL（秒）：30 �?*/
 const DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-/** 批量操作每批的大小 */
+/** 批量操作每批的大�?*/
 const BATCH_SIZE = 100;
 
-/** 单次最多接受的记录数 */
+/** 单次最多接受的记录�?*/
 const MAX_RECORDS_PER_REQUEST = 200;
 
 /** JST 偏移量（毫秒）：UTC+9 */
@@ -73,15 +79,13 @@ interface DayEventEntry {
   eventName: string;
   sessionId: number;
   sessionName: string;
-  recordCount: number;            // 该活动当天的记录数
-  memberCount: number;            // 该活动当天的成员数
-  lastUpdated: number;            // 最后更新时间戳
+  recordCount: number;            // 该活动当天的记录�?  memberCount: number;            // 该活动当天的成员�?  lastUpdated: number;            // 最后更新时间戳
 }
 
 // ========== JST 日期工具函数 ==========
 
 /**
- * 将 UTC 毫秒时间戳转换为 JST 日期字符串 (yyyy-MM-dd)
+ * �?UTC 毫秒时间戳转换为 JST 日期字符�?(yyyy-MM-dd)
  */
 function timestampToJSTDay(timestamp: number): string {
   const jstTime = new Date(timestamp + JST_OFFSET_MS);
@@ -92,8 +96,7 @@ function timestampToJSTDay(timestamp: number): string {
 }
 
 /**
- * 将 JST 日期字符串 (yyyy-MM-dd) 转换为该天 00:00:00 JST 的 UTC 时间戳
- */
+ * �?JST 日期字符�?(yyyy-MM-dd) 转换为该�?00:00:00 JST �?UTC 时间�? */
 function jstDayToStartTimestamp(day: string): number {
   const [y, m, d] = day.split('-').map(Number);
   const utcMs = Date.UTC(y, m - 1, d, 0, 0, 0, 0);
@@ -101,8 +104,7 @@ function jstDayToStartTimestamp(day: string): number {
 }
 
 /**
- * 将 JST 日期字符串 (yyyy-MM-dd) 转换为该天 23:59:59.999 JST 的 UTC 时间戳
- */
+ * �?JST 日期字符�?(yyyy-MM-dd) 转换为该�?23:59:59.999 JST �?UTC 时间�? */
 function jstDayToEndTimestamp(day: string): number {
   const [y, m, d] = day.split('-').map(Number);
   const utcMs = Date.UTC(y, m - 1, d, 23, 59, 59, 999);
@@ -110,7 +112,7 @@ function jstDayToEndTimestamp(day: string): number {
 }
 
 /**
- * 获取日级索引的 KV 键名
+ * 获取日级索引�?KV 键名
  */
 function dayIndexKey(day: string): string {
   return `history:day:${day}`;
@@ -119,10 +121,10 @@ function dayIndexKey(day: string): string {
 // ========== 工具函数 ==========
 
 /**
- * 检查 KV 配置是否有效
+ * 检�?KV 配置是否有效
  */
 function isValidKvConfig(): boolean {
-  return !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+  return !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 }
 
 /**
@@ -141,7 +143,7 @@ function validateRecord(record: any): string | null {
   return null;
 }
 
-// ========== 主处理函数 ==========
+// ========== 主处理函�?==========
 
 /**
  * API 入口函数
@@ -165,16 +167,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  * 处理 GET 请求
  * 根据 mode 参数分发到不同的查询模式
  * 
- * 查询参数：
- * - mode: 查询模式 (days | events | details | 默认兼容模式)
- * - day: 日期字符串 (yyyy-MM-dd, JST)，用于 events/details 模式
+ * 查询参数�? * - mode: 查询模式 (days | events | details | 默认兼容模式)
+ * - day: 日期字符�?(yyyy-MM-dd, JST)，用�?events/details 模式
  * - eventId: 活动ID
  * - sessionId: 场次ID
- * - memberIds: 成员ID列表（逗号分隔）
- * - startTime: 开始时间戳
- * - endTime: 结束时间戳
- * - limit: 最大返回数量（默认 1000）
- */
+ * - memberIds: 成员ID列表（逗号分隔�? * - startTime: 开始时间戳
+ * - endTime: 结束时间�? * - limit: 最大返回数量（默认 1000�? */
 async function handleGet(req: VercelRequest, res: VercelResponse) {
   if (!isValidKvConfig()) {
     res.status(503).json({ error: 'KV not configured' });
@@ -202,10 +200,9 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
 
 /**
  * mode=days: 返回有数据的日期列表
- * 读取所有 history:day:* 索引键
- */
+ * 读取所�?history:day:* 索引�? */
 async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
-  const keys = await kv.keys('history:day:*');
+  const keys = await getKv().keys('history:day:*');
   if (keys.length === 0) {
     res.status(200).json({ days: [] });
     return;
@@ -215,7 +212,7 @@ async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
   const days: Array<{ day: string; eventCount: number; sessionCount: number; totalRecords: number }> = [];
   for (let i = 0; i < keys.length; i += BATCH_SIZE) {
     const batch = keys.slice(i, i + BATCH_SIZE) as string[];
-    const values = await kv.mget<DayIndex[]>(...batch);
+    const values = await getKv().mget<DayIndex[]>(...batch);
     for (const index of values) {
       if (!index) continue;
       const eventIds = new Set(index.events.map(e => e.eventId));
@@ -230,8 +227,7 @@ async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // 按日期降序排列（最近的在前）
-  days.sort((a, b) => b.day.localeCompare(a.day));
+  // 按日期降序排列（最近的在前�?  days.sort((a, b) => b.day.localeCompare(a.day));
   res.status(200).json({ days });
 }
 
@@ -246,14 +242,13 @@ async function handleGetDayEvents(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const index = await kv.get<DayIndex>(dayIndexKey(day));
+  const index = await getKv().get<DayIndex>(dayIndexKey(day));
   if (!index) {
     res.status(200).json({ day, events: [] });
     return;
   }
 
-  // 按 eventId 分组，保留场次细节
-  res.status(200).json({
+  // �?eventId 分组，保留场次细�?  res.status(200).json({
     day: index.day,
     events: index.events,
   });
@@ -261,7 +256,7 @@ async function handleGetDayEvents(req: VercelRequest, res: VercelResponse) {
 
 /**
  * mode=details: 返回某日某活动的详细时间序列
- * 必须提供 day 参数，可选 eventId/sessionId/memberIds 过滤
+ * 必须提供 day 参数，可�?eventId/sessionId/memberIds 过滤
  */
 async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
   const { day, eventId, sessionId, memberIds, limit = '1000' } = req.query;
@@ -276,9 +271,8 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
   const maxRecords = Math.min(parseInt(limit as string) || 1000, 5000);
 
   // 获取所有历史记录的 key
-  const keys = await kv.keys('history:*');
-  // 排除日级索引键
-  const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
+  const keys = await getKv().keys('history:*');
+  // 排除日级索引�?  const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
 
   if (recordKeys.length === 0) {
     res.status(200).json({ day, records: [], count: 0 });
@@ -295,11 +289,10 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
     endTime,
   };
 
-  // 批量获取并过滤
-  const allRecords: HistoryRecord[] = [];
+  // 批量获取并过�?  const allRecords: HistoryRecord[] = [];
   for (let i = 0; i < recordKeys.length; i += BATCH_SIZE) {
     const batch = recordKeys.slice(i, i + BATCH_SIZE) as string[];
-    const values = await kv.mget<HistoryRecord[]>(...batch);
+    const values = await getKv().mget<HistoryRecord[]>(...batch);
     for (const data of values) {
       if (!data) continue;
       if (data.timestamp < filter.startTime! || data.timestamp > filter.endTime!) continue;
@@ -326,9 +319,8 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
 
   try {
     // 获取所有历史记录的 key
-    const keys = await kv.keys('history:*');
-    // 排除日级索引键
-    const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
+    const keys = await getKv().keys('history:*');
+    // 排除日级索引�?    const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
 
     if (recordKeys.length === 0) {
       res.status(200).json({ records: [], count: 0 });
@@ -348,11 +340,10 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
 
     const maxRecords = Math.min(parseInt(limit as string) || 1000, 5000);
 
-    // 批量获取所有记录（使用 mget 替代逐条 get）
-    const allRecords: HistoryRecord[] = [];
+    // 批量获取所有记录（使用 mget 替代逐条 get�?    const allRecords: HistoryRecord[] = [];
     for (let i = 0; i < recordKeys.length; i += BATCH_SIZE) {
       const batch = recordKeys.slice(i, i + BATCH_SIZE) as string[];
-      const values = await kv.mget<HistoryRecord[]>(...batch);
+      const values = await getKv().mget<HistoryRecord[]>(...batch);
       for (const data of values) {
         if (!data) continue;
         allRecords.push(data);
@@ -383,7 +374,7 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
 
 /**
  * 处理 POST 请求
- * 批量保存历史记录，使用 pipeline 批量写入
+ * 批量保存历史记录，使�?pipeline 批量写入
  * 
  * 请求体：
  * - records: 历史记录数组
@@ -407,8 +398,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  // 验证每条记录的字段
-  for (let i = 0; i < records.length; i++) {
+  // 验证每条记录的字�?  for (let i = 0; i < records.length; i++) {
     const validationError = validateRecord(records[i]);
     if (validationError) {
       res.status(400).json({ error: `Record[${i}]: ${validationError}` });
@@ -420,8 +410,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     const timestamp = Date.now();
     const day = timestampToJSTDay(timestamp);
 
-    // 使用 pipeline 批量写入，减少网络往返
-    const pipeline = kv.pipeline();
+    // 使用 pipeline 批量写入，减少网络往�?    const pipeline = getKv().pipeline();
     const memberIdsInBatch = new Set<string>();
 
     for (const record of records) {
@@ -470,10 +459,9 @@ async function updateDayIndex(
 ): Promise<void> {
   try {
     const key = dayIndexKey(day);
-    const existing = await kv.get<DayIndex>(key);
+    const existing = await getKv().get<DayIndex>(key);
 
-    // 按 eventId+sessionId 聚合本批次
-    const batchEntries = new Map<string, DayEventEntry>();
+    // �?eventId+sessionId 聚合本批�?    const batchEntries = new Map<string, DayEventEntry>();
     for (const record of records) {
       const entryKey = `${record.eventId}:${record.sessionId}`;
       const existing = batchEntries.get(entryKey);
@@ -519,10 +507,9 @@ async function updateDayIndex(
       };
     }
 
-    await kv.set(key, dayIndex, { ex: DEFAULT_TTL_SECONDS });
+    await getKv().set(key, dayIndex, { ex: DEFAULT_TTL_SECONDS });
   } catch (error) {
-    // 索引更新失败不应阻塞主流程
-    console.error('Failed to update day index:', error);
+    // 索引更新失败不应阻塞主流�?    console.error('Failed to update day index:', error);
   }
 }
 
@@ -530,13 +517,11 @@ async function updateDayIndex(
 
 /**
  * 处理 DELETE 请求
- * 删除符合条件的历史记录
- * 使用 mget 批量读取 + pipeline 批量删除
+ * 删除符合条件的历史记�? * 使用 mget 批量读取 + pipeline 批量删除
  * 
  * 请求体：
  * - beforeTimestamp: 删除此时间之前的记录
- * - memberIds: 删除指定成员的记录
- */
+ * - memberIds: 删除指定成员的记�? */
 async function handleDelete(req: VercelRequest, res: VercelResponse) {
   if (!isValidKvConfig()) {
     res.status(503).json({ error: 'KV not configured' });
@@ -551,9 +536,8 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const keys = await kv.keys('history:*');
-    // 分离记录键和日级索引键
-    const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
+    const keys = await getKv().keys('history:*');
+    // 分离记录键和日级索引�?    const recordKeys = (keys as string[]).filter(k => !k.startsWith('history:day:'));
     const dayKeys = (keys as string[]).filter(k => k.startsWith('history:day:'));
 
     if (recordKeys.length === 0) {
@@ -561,11 +545,10 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    // 批量读取所有记录
-    const keysToDelete: string[] = [];
+    // 批量读取所有记�?    const keysToDelete: string[] = [];
     for (let i = 0; i < recordKeys.length; i += BATCH_SIZE) {
       const batch = recordKeys.slice(i, i + BATCH_SIZE) as string[];
-      const values = await kv.mget<HistoryRecord[]>(...batch);
+      const values = await getKv().mget<HistoryRecord[]>(...batch);
       for (let j = 0; j < values.length; j++) {
         const data = values[j];
         if (!data) continue;
@@ -586,7 +569,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
 
     // 批量删除记录
     if (keysToDelete.length > 0) {
-      const pipeline = kv.pipeline();
+      const pipeline = getKv().pipeline();
       for (const key of keysToDelete) {
         pipeline.del(key);
       }
@@ -601,7 +584,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
         return day < cutoffDay;
       });
       if (dayKeysToDelete.length > 0) {
-        const pipeline = kv.pipeline();
+        const pipeline = getKv().pipeline();
         for (const key of dayKeysToDelete) {
           pipeline.del(key);
         }
