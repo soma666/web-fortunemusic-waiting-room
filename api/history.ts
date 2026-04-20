@@ -152,46 +152,110 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-/** mode=days */
+/** mode=days: Compute from sorted set keys (not cached day index) */
 async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
-  const keys = await getKv().keys('history:day:*');
-  if (keys.length === 0) {
+  const keys = await getKv().keys('history:ts:*');
+  if (!keys || keys.length === 0) {
     res.status(200).json({ days: [] });
     return;
   }
 
-  const days: Array<{ day: string; eventCount: number; sessionCount: number; totalRecords: number }> = [];
-  const values = await getKv().mget<DayIndex[]>(...(keys as string[]));
-  for (const index of values) {
-    if (!index) continue;
-    const eventIds = new Set(index.events.map(e => e.eventId));
-    const sessionIds = new Set(index.events.map(e => e.sessionId));
-    const totalRecords = index.events.reduce((sum, e) => sum + e.recordCount, 0);
-    days.push({
-      day: index.day,
-      eventCount: eventIds.size,
-      sessionCount: sessionIds.size,
-      totalRecords,
-    });
+  // Pipeline ZCARD for all sorted set keys
+  const pipeline = getKv().pipeline();
+  for (const key of keys as string[]) {
+    pipeline.zcard(key);
   }
+  const counts = await pipeline.exec();
+
+  // Group by day
+  const dayMap = new Map<string, { eventIds: Set<number>; sessionIds: Set<number>; totalRecords: number }>();
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i] as string;
+    const parts = key.split(':'); // history:ts:day:eventId:sessionId
+    const day = parts[2] ?? '';
+    const eventId = parseInt(parts[3] ?? '');
+    const sessionId = parseInt(parts[4] ?? '');
+    const count = (counts[i] as number) || 0;
+    if (count === 0) continue;
+
+    if (!dayMap.has(day)) {
+      dayMap.set(day, { eventIds: new Set(), sessionIds: new Set(), totalRecords: 0 });
+    }
+    const entry = dayMap.get(day)!;
+    entry.eventIds.add(eventId);
+    entry.sessionIds.add(sessionId);
+    entry.totalRecords += count;
+  }
+
+  const days = Array.from(dayMap.entries()).map(([day, entry]) => ({
+    day,
+    eventCount: entry.eventIds.size,
+    sessionCount: entry.sessionIds.size,
+    totalRecords: entry.totalRecords,
+  }));
 
   days.sort((a, b) => b.day.localeCompare(a.day));
   res.status(200).json({ days });
 }
 
-/** mode=events */
+/** mode=events: Compute from sorted set keys (not cached day index) */
 async function handleGetDayEvents(req: VercelRequest, res: VercelResponse) {
   const { day } = req.query;
   if (!day || typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     res.status(400).json({ error: 'day parameter required (yyyy-MM-dd)' });
     return;
   }
-  const index = await getKv().get<DayIndex>(dayIndexKey(day));
-  if (!index) {
+
+  const keys = await getKv().keys(`history:ts:${day}:*`);
+  if (!keys || keys.length === 0) {
     res.status(200).json({ day, events: [] });
     return;
   }
-  res.status(200).json({ day: index.day, events: index.events });
+
+  // Pipeline: ZCARD + last batch sample for each key
+  const pipeline = getKv().pipeline();
+  for (const key of keys as string[]) {
+    pipeline.zcard(key);
+    pipeline.zrange(key, -200, -1); // last ~200 records for member count + names
+  }
+  const results = await pipeline.exec();
+
+  const events: DayEventEntry[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i] as string;
+    const parts = key.split(':');
+    const eventId = parseInt(parts[3] ?? '');
+    const sessionId = parseInt(parts[4] ?? '');
+    const recordCount = (results[i * 2] as number) || 0;
+    const lastBatch = results[i * 2 + 1];
+
+    if (recordCount === 0) continue;
+
+    let eventName = '';
+    let sessionName = '';
+    let memberCount = 0;
+    let lastUpdated = 0;
+
+    if (Array.isArray(lastBatch) && lastBatch.length > 0) {
+      const memberIds = new Set<string>();
+      for (const m of lastBatch as unknown[]) {
+        const record = parseMember(m);
+        memberIds.add(record.memberId);
+        if (!eventName) {
+          eventName = record.eventName;
+          sessionName = record.sessionName;
+        }
+        if (record.timestamp > lastUpdated) {
+          lastUpdated = record.timestamp;
+        }
+      }
+      memberCount = memberIds.size;
+    }
+
+    events.push({ eventId, eventName, sessionId, sessionName, recordCount, memberCount, lastUpdated });
+  }
+
+  res.status(200).json({ day, events });
 }
 
 /** mode=details: Precise sorted set query */
@@ -304,7 +368,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { records } = req.body;
+  const { records, eventDay } = req.body;
 
   if (!Array.isArray(records) || records.length === 0) {
     res.status(400).json({ error: 'Invalid records: must be a non-empty array' });
@@ -324,7 +388,10 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   try {
     const timestamp = Date.now();
-    const day = timestampToJSTDay(timestamp);
+    // Use event day from client if provided, otherwise compute from current time
+    const day = (typeof eventDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(eventDay))
+      ? eventDay
+      : timestampToJSTDay(timestamp);
 
     // Group records by eventId+sessionId
     const groups = new Map<string, any[]>();

@@ -186,7 +186,11 @@ export function App() {
       });
 
       if (records.length > 0) {
-        const saved = await saveBatchHistoryRecords(records);
+        // Use event date to determine storage day, preventing cross-midnight misclassification
+        const eventDay = selectedEvent?.date
+          ? `${selectedEvent.date.getFullYear()}-${String(selectedEvent.date.getMonth() + 1).padStart(2, '0')}-${String(selectedEvent.date.getDate()).padStart(2, '0')}`
+          : undefined;
+        const saved = await saveBatchHistoryRecords(records, eventDay);
         if (!saved) console.warn("Failed to save history records");
       }
 

@@ -89,13 +89,16 @@ export async function fetchHistory(filter: HistoryFilter = {}): Promise<HistoryR
  * @param records - 批量记录数组
  * @returns 是否保存成功
  */
-export async function saveBatchHistoryRecords(records: HistoryBatchRecord[]): Promise<boolean> {
+export async function saveBatchHistoryRecords(
+  records: HistoryBatchRecord[],
+  eventDay?: string
+): Promise<boolean> {
   if (records.length === 0) return false;
 
   try {
     await apiRequest('/history', {
       method: 'POST',
-      body: JSON.stringify({ records }),
+      body: JSON.stringify({ records, eventDay }),
     });
     return true;
   } catch (error) {
