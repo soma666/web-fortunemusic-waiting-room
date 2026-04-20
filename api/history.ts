@@ -112,6 +112,35 @@ function parseMember(m: unknown): HistoryRecord {
   return m as HistoryRecord;
 }
 
+/** Paginated ZRANGE to avoid Upstash 10MB response limit */
+const ZRANGE_PAGE_SIZE = 500;
+async function paginatedZrange(
+  key: string,
+  maxRecords: number,
+  filterFn?: (r: HistoryRecord) => boolean,
+): Promise<HistoryRecord[]> {
+  const results: HistoryRecord[] = [];
+  let offset = 0;
+
+  while (results.length < maxRecords) {
+    const batch = await getKv().zrange(key, offset, offset + ZRANGE_PAGE_SIZE - 1);
+    if (!Array.isArray(batch) || batch.length === 0) break;
+
+    for (const m of batch as unknown[]) {
+      const record = parseMember(m);
+      if (!filterFn || filterFn(record)) {
+        results.push(record);
+        if (results.length >= maxRecords) break;
+      }
+    }
+
+    offset += ZRANGE_PAGE_SIZE;
+    if (batch.length < ZRANGE_PAGE_SIZE) break; // no more data
+  }
+
+  return results;
+}
+
 // ========== Main Handler ==========
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -274,13 +303,14 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
 
   let allRecords: HistoryRecord[] = [];
 
+  const filterFn = parsedMemberIds
+    ? (r: HistoryRecord) => parsedMemberIds.includes(r.memberId)
+    : undefined;
+
   if (eventId && sessionId) {
-    // Exact query: read a single sorted set key
+    // Exact query: read a single sorted set key (paginated)
     const key = tsKey(day, parseInt(eventId as string), parseInt(sessionId as string));
-    const members = await getKv().zrange(key, 0, -1);
-    if (Array.isArray(members) && members.length > 0) {
-      allRecords = members.map((m: unknown) => parseMember(m));
-    }
+    allRecords = await paginatedZrange(key, maxRecords, filterFn);
   } else {
     // Fuzzy query: scan sorted set keys under this day
     const pattern = eventId
@@ -289,17 +319,11 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
     const keys = await getKv().keys(pattern);
 
     for (const key of (keys || []) as string[]) {
-      const members = await getKv().zrange(key, 0, -1);
-      if (!Array.isArray(members)) continue;
-      for (const m of members as unknown[]) {
-        allRecords.push(parseMember(m));
-      }
+      if (allRecords.length >= maxRecords) break;
+      const remaining = maxRecords - allRecords.length;
+      const batch = await paginatedZrange(key, remaining, filterFn);
+      allRecords.push(...batch);
     }
-  }
-
-  // Apply memberIds filter
-  if (parsedMemberIds) {
-    allRecords = allRecords.filter(r => parsedMemberIds.includes(r.memberId));
   }
 
   const records = allRecords
@@ -338,15 +362,16 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
       if (parsedEventId && keyEventId !== parsedEventId) continue;
       if (parsedSessionId && keySessionId !== parsedSessionId) continue;
 
-      const members = await getKv().zrange(key as string, 0, -1);
-      if (!Array.isArray(members)) continue;
-      for (const m of members as unknown[]) {
-        const record = parseMember(m);
-        if (parsedMemberIds && !parsedMemberIds.includes(record.memberId)) continue;
-        if (startTime && record.timestamp < parseInt(startTime as string)) continue;
-        if (endTime && record.timestamp > parseInt(endTime as string)) continue;
-        allRecords.push(record);
-      }
+      if (allRecords.length >= maxRecords) break;
+      const remaining = maxRecords - allRecords.length;
+      const filterFn = (record: HistoryRecord) => {
+        if (parsedMemberIds && !parsedMemberIds.includes(record.memberId)) return false;
+        if (startTime && record.timestamp < parseInt(startTime as string)) return false;
+        if (endTime && record.timestamp > parseInt(endTime as string)) return false;
+        return true;
+      };
+      const batch = await paginatedZrange(key as string, remaining, filterFn);
+      allRecords.push(...batch);
     }
 
     const records = allRecords
@@ -566,19 +591,29 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
     if (memberIds && Array.isArray(memberIds) && memberIds.length > 0) {
       const tsKeys = await getKv().keys('history:ts:*');
       for (const key of tsKeys as string[]) {
-        const members = await getKv().zrange(key, 0, -1);
-        const pipeline = getKv().pipeline();
-        let removedCount = 0;
-        for (const m of members as unknown[]) {
-          const record = parseMember(m);
-          if (memberIds.includes(record.memberId)) {
-            pipeline.zrem(key, typeof m === 'string' ? m : JSON.stringify(m));
-            removedCount++;
+        // Paginated scan to avoid 10MB response limit
+        let offset = 0;
+        while (true) {
+          const batch = await getKv().zrange(key, offset, offset + ZRANGE_PAGE_SIZE - 1);
+          if (!Array.isArray(batch) || batch.length === 0) break;
+
+          const pipeline = getKv().pipeline();
+          let removedCount = 0;
+          for (const m of batch as unknown[]) {
+            const record = parseMember(m);
+            if (memberIds.includes(record.memberId)) {
+              pipeline.zrem(key, typeof m === 'string' ? m : JSON.stringify(m));
+              removedCount++;
+            }
           }
-        }
-        if (removedCount > 0) {
-          await pipeline.exec();
-          deleted += removedCount;
+          if (removedCount > 0) {
+            await pipeline.exec();
+            deleted += removedCount;
+            // Don't advance offset since items were removed
+          } else {
+            offset += ZRANGE_PAGE_SIZE;
+          }
+          if (batch.length < ZRANGE_PAGE_SIZE) break;
         }
       }
     }
