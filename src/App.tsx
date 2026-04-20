@@ -186,12 +186,25 @@ export function App() {
       });
 
       if (records.length > 0) {
-        // Use event date to determine storage day, preventing cross-midnight misclassification
-        const eventDay = selectedEvent?.date
-          ? `${selectedEvent.date.getFullYear()}-${String(selectedEvent.date.getMonth() + 1).padStart(2, '0')}-${String(selectedEvent.date.getDate()).padStart(2, '0')}`
-          : undefined;
-        const saved = await saveBatchHistoryRecords(records, eventDay);
-        if (!saved) console.warn("Failed to save history records");
+        // Only save when the event session is currently active (between startTime and endTime)
+        const now = new Date();
+        const isSessionActive = selectedSession
+          && now >= selectedSession.startTime
+          && now <= selectedSession.endTime;
+
+        if (isSessionActive) {
+          const nonZero = records.filter(r => r.waitingCount > 0 || r.waitingTime > 0);
+          console.log(`[DIAG] Session active, saving ${records.length} records (${nonZero.length} non-zero)`);
+
+          // Use event date to determine storage day, preventing cross-midnight misclassification
+          const eventDay = selectedEvent?.date
+            ? `${selectedEvent.date.getFullYear()}-${String(selectedEvent.date.getMonth() + 1).padStart(2, '0')}-${String(selectedEvent.date.getDate()).padStart(2, '0')}`
+            : undefined;
+          const saved = await saveBatchHistoryRecords(records, eventDay);
+          if (!saved) console.warn("Failed to save history records");
+        } else {
+          console.log(`[DIAG] Session not active, skipping save (now=${now.toISOString()}, start=${selectedSession?.startTime?.toISOString()}, end=${selectedSession?.endTime?.toISOString()})`);
+        }
       }
 
       setLastUpdate(new Date());

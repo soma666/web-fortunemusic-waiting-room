@@ -171,6 +171,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
       case 'days': return await handleGetDays(req, res);
       case 'events': return await handleGetDayEvents(req, res);
       case 'details': return await handleGetDayDetails(req, res);
+      case 'diag': return await handleGetDiag(req, res);
       default: return await handleGetLegacy(req, res);
     }
   } catch (error) {
@@ -179,6 +180,22 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
       res.status(500).json({ error: 'Failed to fetch history', message: String(error) });
     }
   }
+}
+
+/** mode=diag: Return recent diagnostic snapshots from waitingrooms proxy */
+async function handleGetDiag(_req: VercelRequest, res: VercelResponse) {
+  const kv = getKv();
+  const snapshots = await kv.lrange('diag:waitingrooms', 0, 49);
+  const parsed = snapshots.map((s: unknown) => {
+    if (typeof s === 'string') {
+      try { return JSON.parse(s); } catch { return s; }
+    }
+    return s;
+  });
+  res.status(200).json({
+    count: parsed.length,
+    snapshots: parsed,
+  });
 }
 
 /** mode=days: Compute from sorted set keys (not cached day index) */
