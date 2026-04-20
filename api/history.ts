@@ -510,15 +510,30 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { beforeTimestamp, memberIds } = req.body;
+  const { beforeTimestamp, memberIds, day: deleteDay } = req.body;
 
-  if (!beforeTimestamp && !memberIds) {
-    res.status(400).json({ error: 'Must provide beforeTimestamp or memberIds' });
+  if (!beforeTimestamp && !memberIds && !deleteDay) {
+    res.status(400).json({ error: 'Must provide beforeTimestamp, memberIds, or day' });
     return;
   }
 
   try {
     let deleted = 0;
+
+    // Delete all data for a specific day
+    if (deleteDay && typeof deleteDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deleteDay)) {
+      const tsKeys = await getKv().keys(`history:ts:${deleteDay}:*`);
+      const dayKey = dayIndexKey(deleteDay);
+      const allKeys = [...(tsKeys as string[]), dayKey];
+      if (allKeys.length > 0) {
+        const pipeline = getKv().pipeline();
+        for (const key of allKeys) {
+          pipeline.del(key);
+        }
+        await pipeline.exec();
+        deleted += allKeys.length;
+      }
+    }
 
     if (beforeTimestamp) {
       const cutoffDay = timestampToJSTDay(beforeTimestamp);
