@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Redis } from '@upstash/redis';
-import { flatternEventArray, type Event } from '../src/api/fortunemusic/events';
 import { writeHistoryRecords } from './history';
 
 const TARGET_ARTIST_NAMES = ['乃木坂46', '櫻坂46', '日向坂46', '=LOVE'];
@@ -16,13 +15,39 @@ const COLLECTOR_SNAPSHOT_LIMIT = 120;
 
 interface RawArtist {
   artName: string;
-  eventArray: unknown[];
+  eventArray: RawEvent[];
 }
 
 interface RawEventsResponse {
   appGetEventResponse?: {
     artistArray?: RawArtist[];
   };
+}
+
+interface RawEvent {
+  evtId: number;
+  evtName: string;
+  evtPhotUrl: string;
+  dateArray: RawDate[];
+}
+
+interface RawDate {
+  dateDate: string;
+  timeZoneArray: RawTimezone[];
+}
+
+interface RawTimezone {
+  tzId: number;
+  tzName: string;
+  tzStart: string;
+  tzEnd: string;
+  memberArray: RawMember[];
+}
+
+interface RawMember {
+  mbName: string;
+  mbPhotoUrl: string;
+  shCode: string;
 }
 
 interface RawWaitingRoomsResponse {
@@ -48,11 +73,107 @@ interface CollectorLogEntry {
   meta?: Record<string, unknown>;
 }
 
+interface EventMember {
+  name: string;
+  thumbnailUrl: string;
+}
+
+interface EventSession {
+  id: number;
+  name: string;
+  startTime: Date;
+  endTime: Date;
+  members: Map<string, EventMember>;
+}
+
+interface EventSummary {
+  id: number;
+  name: string;
+  date: Date;
+  sessions: Map<number, EventSession>;
+}
+
 function getRedis(): Redis {
   return new Redis({
     url: process.env.KV_REST_API_URL!,
     token: process.env.KV_REST_API_TOKEN!,
   });
+}
+
+function getSingleQueryValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+function parseJstDateTime(dateText: string, timeText: string): Date {
+  return new Date(`${dateText}T${timeText}:00+09:00`);
+}
+
+function getJstDay(date: Date): string {
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const year = jst.getUTCFullYear();
+  const month = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(jst.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function isSameJstDayOrFuture(dateText: string, now: Date): boolean {
+  const target = new Date(`${dateText}T00:00:00+09:00`);
+  const nowJst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const todayStart = Date.UTC(nowJst.getUTCFullYear(), nowJst.getUTCMonth(), nowJst.getUTCDate());
+  const targetStart = Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate());
+  return targetStart >= todayStart;
+}
+
+function mapMembers(memberArray: RawMember[]): Map<string, EventMember> {
+  const members = new Map<string, EventMember>();
+  for (const member of memberArray) {
+    members.set(member.shCode, {
+      name: member.mbName,
+      thumbnailUrl: member.mbPhotoUrl,
+    });
+  }
+  return members;
+}
+
+function parseEventsResponse(data: RawEventsResponse, now: Date): EventSummary[] {
+  const results: EventSummary[] = [];
+
+  for (const artist of data.appGetEventResponse?.artistArray || []) {
+    if (!TARGET_ARTIST_NAMES.includes(artist.artName)) {
+      continue;
+    }
+
+    for (const event of artist.eventArray || []) {
+      for (const dateEntry of event.dateArray || []) {
+        if (!isSameJstDayOrFuture(dateEntry.dateDate, now)) {
+          continue;
+        }
+
+        const sessions = new Map<number, EventSession>();
+        for (const timezone of dateEntry.timeZoneArray || []) {
+          sessions.set(timezone.tzId, {
+            id: timezone.tzId,
+            name: timezone.tzName,
+            startTime: parseJstDateTime(dateEntry.dateDate, timezone.tzStart),
+            endTime: parseJstDateTime(dateEntry.dateDate, timezone.tzEnd),
+            members: mapMembers(timezone.memberArray || []),
+          });
+        }
+
+        results.push({
+          id: event.evtId,
+          name: event.evtName,
+          date: new Date(`${dateEntry.dateDate}T00:00:00+09:00`),
+          sessions,
+        });
+      }
+    }
+  }
+
+  return results;
 }
 
 async function pushCollectorLog(entry: CollectorLogEntry): Promise<void> {
@@ -76,50 +197,35 @@ async function setCollectorStatus(status: Record<string, unknown>): Promise<void
 }
 
 function isAuthorized(req: VercelRequest): boolean {
+  const mode = getSingleQueryValue(req.query.mode);
   const cronSecret = process.env.CRON_SECRET;
+
   if (cronSecret) {
     const authHeader = req.headers.authorization;
-    return authHeader === `Bearer ${cronSecret}`;
+    const token = getSingleQueryValue(req.query.token);
+    return authHeader === `Bearer ${cronSecret}` || token === cronSecret;
   }
 
   const userAgent = req.headers['user-agent'];
-  return userAgent === 'vercel-cron/1.0' || process.env.NODE_ENV !== 'production';
+  return userAgent === 'vercel-cron/1.0' || process.env.NODE_ENV !== 'production' || mode === 'once';
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getJstDay(date: Date): string {
-  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-  const year = jst.getUTCFullYear();
-  const month = String(jst.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(jst.getUTCDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function getActiveEvents(events: Event[], now: Date): Event[] {
+function getActiveEvents(events: EventSummary[], now: Date): EventSummary[] {
   return events.filter((event) => Array.from(event.sessions.values()).some((session) => now >= session.startTime && now <= session.endTime));
 }
 
-async function fetchActiveEvents(): Promise<Event[]> {
+async function fetchActiveEvents(): Promise<EventSummary[]> {
   const response = await fetch('https://fm.proxies.n46.io/v1/appGetEventData/');
   if (!response.ok) {
     throw new Error(`Events upstream API returned ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json() as RawEventsResponse;
-  const result: Event[] = [];
-  for (const artist of data.appGetEventResponse?.artistArray || []) {
-    if (!TARGET_ARTIST_NAMES.includes(artist.artName)) {
-      continue;
-    }
-    const eventMap = flatternEventArray(artist.artName, artist.eventArray as never[]);
-    eventMap.forEach((events) => {
-      result.push(...events);
-    });
-  }
-  return getActiveEvents(result, new Date());
+  return getActiveEvents(parseEventsResponse(data, new Date()), new Date());
 }
 
 async function fetchWaitingRoomsSnapshot(sessionId: number): Promise<RawWaitingRoomsResponse> {
@@ -225,23 +331,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const locked = await acquireCollectorLock();
-  if (!locked) {
-    await pushCollectorLog({
-      ts: Date.now(),
-      level: 'warn',
-      event: 'lock-conflict',
-      message: 'Collector skipped because another run is already active',
-    });
-    res.status(409).json({ error: 'Collector already running' });
-    return;
-  }
-
-  const manualOnce = req.query.mode === 'once';
+  const manualOnce = getSingleQueryValue(req.query.mode) === 'once';
   const startedAt = Date.now();
   const snapshots: CollectorSnapshotSummary[] = [];
 
   try {
+    const locked = await acquireCollectorLock();
+    if (!locked) {
+      await pushCollectorLog({
+        ts: Date.now(),
+        level: 'warn',
+        event: 'lock-conflict',
+        message: 'Collector skipped because another run is already active',
+      });
+      res.status(409).json({ error: 'Collector already running' });
+      return;
+    }
+
     await setCollectorStatus({
       state: 'running',
       startedAt,
@@ -331,15 +437,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       error: message,
       snapshotCount: snapshots.length,
     };
-    await setCollectorStatus(status);
-    await pushCollectorLog({
-      ts: failedAt,
-      level: 'error',
-      event: 'run-failed',
-      message,
-      meta: status,
-    });
-    res.status(500).json({ error: error instanceof Error ? error.message : 'History collector failed' });
+    try {
+      await setCollectorStatus(status);
+      await pushCollectorLog({
+        ts: failedAt,
+        level: 'error',
+        event: 'run-failed',
+        message,
+        meta: status,
+      });
+    } catch {
+      // Ignore secondary logging failures.
+    }
+    res.status(500).json({ error: message });
   } finally {
     await releaseCollectorLock();
   }

@@ -441,14 +441,6 @@ export function HistoryPanel({
         </div>
       );
     }
-    if (availableDays.length === 0) {
-      return (
-        <div className="flex items-center justify-center h-full text-muted-foreground">
-          暂无历史数据
-        </div>
-      );
-    }
-
     return (
       <div className="space-y-2">
         {collectorDiag && (
@@ -532,6 +524,12 @@ export function HistoryPanel({
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {availableDays.length === 0 && (
+          <div className="flex items-center justify-center rounded-lg border border-dashed p-8 text-muted-foreground">
+            暂无历史数据
+          </div>
         )}
 
         {availableDays.map((daySummary) => (
