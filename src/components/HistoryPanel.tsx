@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { HistoryChart } from './HistoryChart';
 import {
   fetchAvailableDays,
+  fetchCollectorDiag,
   fetchDayEvents,
   fetchDayDetails,
   fetchHistory,
@@ -33,6 +34,7 @@ import type {
   DaySummary,
   DayEventSummary,
   HistoryBrowsePhase,
+  CollectorDiag,
 } from '@/lib/history-types';
 import { CHART_COLORS } from '@/lib/constants';
 import { format } from 'date-fns';
@@ -99,6 +101,8 @@ export function HistoryPanel({
   const [viewMode, setViewMode] = useState<'chart' | 'cards' | 'list'>('chart');
   /** 面板设置 */
   const [settings, setSettings] = useState<HistorySettings>(getSettings());
+  /** 采集器诊断信息 */
+  const [collectorDiag, setCollectorDiag] = useState<CollectorDiag | null>(null);
 
   // ========== 数据加载 ==========
 
@@ -107,8 +111,12 @@ export function HistoryPanel({
     setLoading(true);
     setError(null);
     try {
-      const days = await fetchAvailableDays();
+      const [days, diag] = await Promise.all([
+        fetchAvailableDays(),
+        fetchCollectorDiag(),
+      ]);
       setAvailableDays(days);
+      setCollectorDiag(diag);
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取日期列表失败');
     } finally {
@@ -443,6 +451,89 @@ export function HistoryPanel({
 
     return (
       <div className="space-y-2">
+        {collectorDiag && (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="text-base">采集器状态</CardTitle>
+                <Badge
+                  variant={collectorDiag.status?.state === 'error' ? 'destructive' : 'secondary'}
+                >
+                  {collectorDiag.status?.state === 'running'
+                    ? '运行中'
+                    : collectorDiag.status?.state === 'error'
+                      ? '异常'
+                      : '空闲'}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border p-3">
+                  <div className="text-sm text-muted-foreground">最近成功</div>
+                  <div className="mt-1 text-sm font-medium">
+                    {collectorDiag.lastSuccess?.finishedAt
+                      ? format(new Date(collectorDiag.lastSuccess.finishedAt), 'MM-dd HH:mm:ss')
+                      : '暂无'}
+                  </div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-sm text-muted-foreground">最近采样数</div>
+                  <div className="mt-1 text-sm font-medium">
+                    {collectorDiag.lastSuccess?.snapshotCount ?? 0}
+                  </div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-sm text-muted-foreground">最近写入记录</div>
+                  <div className="mt-1 text-sm font-medium">
+                    {collectorDiag.lastSuccess?.totalRecords ?? 0}
+                  </div>
+                </div>
+              </div>
+
+              {collectorDiag.status?.error && (
+                <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {collectorDiag.status.error}
+                </div>
+              )}
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">最近采样</div>
+                  <div className="space-y-2">
+                    {collectorDiag.snapshots.length > 0 ? collectorDiag.snapshots.slice(0, 6).map((snapshot) => (
+                      <div key={snapshot.timestamp} className="flex items-center justify-between rounded-lg border p-2 text-sm">
+                        <span className="font-mono">{format(new Date(snapshot.timestamp), 'HH:mm:ss')}</span>
+                        <span className="text-muted-foreground">活动 {snapshot.events} · 场次 {snapshot.sessions} · 记录 {snapshot.records}</span>
+                      </div>
+                    )) : (
+                      <div className="rounded-lg border p-3 text-sm text-muted-foreground">暂无采样摘要</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">最近日志</div>
+                  <div className="space-y-2">
+                    {collectorDiag.logs.length > 0 ? collectorDiag.logs.slice(0, 6).map((log) => (
+                      <div key={`${log.ts}-${log.event}`} className="rounded-lg border p-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-mono">{format(new Date(log.ts), 'HH:mm:ss')}</span>
+                          <Badge variant={log.level === 'error' ? 'destructive' : 'outline'}>{log.level}</Badge>
+                        </div>
+                        <div className="mt-1 font-medium">{log.event}</div>
+                        <div className="text-muted-foreground">{log.message}</div>
+                      </div>
+                    )) : (
+                      <div className="rounded-lg border p-3 text-sm text-muted-foreground">暂无运行日志</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {availableDays.map((daySummary) => (
           <Card
             key={daySummary.day}

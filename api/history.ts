@@ -35,6 +35,12 @@ function getKv(): Redis {
 const DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_RECORDS_PER_REQUEST = 200;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const HISTORY_DAYS_INDEX_KEY = 'history:idx:days';
+const MAX_CLIENT_SNAPSHOT_SKEW_MS = 2 * 60 * 1000;
+const COLLECTOR_LOGS_KEY = 'history:collector:logs';
+const COLLECTOR_SNAPSHOTS_KEY = 'history:collector:snapshots';
+const COLLECTOR_STATUS_KEY = 'history:collector:status';
+const COLLECTOR_LAST_SUCCESS_KEY = 'history:collector:last-success';
 
 // ========== Types ==========
 
@@ -82,6 +88,10 @@ function dayIndexKey(day: string): string {
   return `history:day:${day}`;
 }
 
+function daySessionsIndexKey(day: string): string {
+  return `history:idx:day:${day}`;
+}
+
 /** Sorted Set key: history:ts:{day}:{eventId}:{sessionId} */
 function tsKey(day: string, eventId: number, sessionId: number): string {
   return `history:ts:${day}:${eventId}:${sessionId}`;
@@ -110,6 +120,234 @@ function validateRecord(record: any): string | null {
 function parseMember(m: unknown): HistoryRecord {
   if (typeof m === 'string') return JSON.parse(m);
   return m as HistoryRecord;
+}
+
+function parseStringArray(items: unknown): string[] {
+  if (!Array.isArray(items)) return [];
+  return items.filter((item): item is string => typeof item === 'string');
+}
+
+async function getIndexedDays(): Promise<string[]> {
+  const indexedDays = parseStringArray(await getKv().smembers(HISTORY_DAYS_INDEX_KEY));
+  if (indexedDays.length > 0) {
+    return indexedDays.sort();
+  }
+
+  const discoveredKeys = parseStringArray(await getKv().keys('history:ts:*'));
+  if (discoveredKeys.length === 0) {
+    return [];
+  }
+
+  const days = new Set<string>();
+  const pipeline = getKv().pipeline();
+  for (const key of discoveredKeys) {
+    const day = key.split(':')[2] ?? '';
+    if (!day) continue;
+    days.add(day);
+    pipeline.sadd(daySessionsIndexKey(day), key);
+  }
+  for (const day of days) {
+    pipeline.sadd(HISTORY_DAYS_INDEX_KEY, day);
+  }
+  await pipeline.exec();
+
+  return Array.from(days).sort();
+}
+
+async function getDayTsKeys(day: string): Promise<string[]> {
+  const indexedKeys = parseStringArray(await getKv().smembers(daySessionsIndexKey(day)))
+    .filter((key) => key.startsWith(`history:ts:${day}:`));
+  if (indexedKeys.length > 0) {
+    return indexedKeys;
+  }
+
+  const discoveredKeys = parseStringArray(await getKv().keys(`history:ts:${day}:*`));
+  if (discoveredKeys.length > 0) {
+    const pipeline = getKv().pipeline();
+    pipeline.sadd(HISTORY_DAYS_INDEX_KEY, day);
+    for (const key of discoveredKeys) {
+      pipeline.sadd(daySessionsIndexKey(day), key);
+    }
+    await pipeline.exec();
+  }
+  return discoveredKeys;
+}
+
+async function getAllTsKeys(): Promise<string[]> {
+  const days = await getIndexedDays();
+  const keySet = new Set<string>();
+
+  for (const day of days) {
+    const keys = await getDayTsKeys(day);
+    for (const key of keys) {
+      keySet.add(key);
+    }
+  }
+
+  if (keySet.size > 0) {
+    return Array.from(keySet);
+  }
+
+  return parseStringArray(await getKv().keys('history:ts:*'));
+}
+
+async function pruneEmptyDays(days: string[]): Promise<void> {
+  const uniqueDays = Array.from(new Set(days));
+  for (const day of uniqueDays) {
+    const remainingKeys = parseStringArray(await getKv().smembers(daySessionsIndexKey(day)));
+    if (remainingKeys.length === 0) {
+      const pipeline = getKv().pipeline();
+      pipeline.del(daySessionsIndexKey(day));
+      pipeline.srem(HISTORY_DAYS_INDEX_KEY, day);
+      pipeline.del(dayIndexKey(day));
+      await pipeline.exec();
+    }
+  }
+}
+
+async function pruneEmptyTsKeys(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+
+  const pipeline = getKv().pipeline();
+  for (const key of keys) {
+    pipeline.zcard(key);
+  }
+  const counts = await pipeline.exec();
+
+  const emptyKeys: string[] = [];
+  for (let index = 0; index < keys.length; index++) {
+    if (((counts[index] as number) || 0) === 0) {
+      emptyKeys.push(keys[index]!);
+    }
+  }
+
+  if (emptyKeys.length === 0) {
+    return;
+  }
+
+  const affectedDays = new Set<string>();
+  const cleanupPipeline = getKv().pipeline();
+  for (const key of emptyKeys) {
+    const day = key.split(':')[2] ?? '';
+    if (day) {
+      affectedDays.add(day);
+      cleanupPipeline.srem(daySessionsIndexKey(day), key);
+    }
+    cleanupPipeline.del(key);
+  }
+  await cleanupPipeline.exec();
+  await pruneEmptyDays(Array.from(affectedDays));
+}
+
+function resolveSnapshotTimestamp(snapshotTimestamp: unknown): number {
+  const serverNow = Date.now();
+  if (typeof snapshotTimestamp !== 'number' || !Number.isFinite(snapshotTimestamp)) {
+    return serverNow;
+  }
+
+  const requestedTimestamp = Math.floor(snapshotTimestamp);
+  if (requestedTimestamp <= 0) {
+    return serverNow;
+  }
+
+  if (Math.abs(requestedTimestamp - serverNow) > MAX_CLIENT_SNAPSHOT_SKEW_MS) {
+    console.warn('Ignoring out-of-range snapshotTimestamp', { requestedTimestamp, serverNow });
+    return serverNow;
+  }
+
+  return requestedTimestamp;
+}
+
+export interface HistoryWriteInput {
+  records: Array<{
+    memberId: string;
+    memberName: string;
+    memberAvatar?: string;
+    eventId: number;
+    eventName: string;
+    sessionId: number;
+    sessionName: string;
+    waitingCount: number;
+    waitingTime: number;
+    avgWaitTime?: number;
+  }>;
+  eventDay?: string;
+  snapshotTimestamp?: number;
+}
+
+export async function writeHistoryRecords(input: HistoryWriteInput): Promise<{ saved: number; failed: number; timestamp: number; day: string; }> {
+  const { records, eventDay, snapshotTimestamp } = input;
+
+  if (!isValidKvConfig()) {
+    throw new Error('KV not configured');
+  }
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new Error('Invalid records: must be a non-empty array');
+  }
+  if (records.length > MAX_RECORDS_PER_REQUEST) {
+    throw new Error(`Too many records: max ${MAX_RECORDS_PER_REQUEST}`);
+  }
+  for (let index = 0; index < records.length; index++) {
+    const validationError = validateRecord(records[index]);
+    if (validationError) {
+      throw new Error(`Record[${index}]: ${validationError}`);
+    }
+  }
+
+  const timestamp = resolveSnapshotTimestamp(snapshotTimestamp);
+  const day = (typeof eventDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(eventDay))
+    ? eventDay
+    : timestampToJSTDay(timestamp);
+
+  const groups = new Map<string, HistoryWriteInput['records']>();
+  for (const record of records) {
+    const groupKey = `${record.eventId}:${record.sessionId}`;
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = [];
+      groups.set(groupKey, group);
+    }
+    group.push(record);
+  }
+
+  const pipeline = getKv().pipeline();
+  const memberIdsInBatch = new Set<string>();
+
+  for (const [groupKey, groupRecords] of groups) {
+    const [eid = 0, sid = 0] = groupKey.split(':').map(Number);
+    const sortedSetKey = tsKey(day, eid, sid);
+
+    pipeline.zremrangebyscore(sortedSetKey, timestamp, timestamp);
+    pipeline.sadd(HISTORY_DAYS_INDEX_KEY, day);
+    pipeline.sadd(daySessionsIndexKey(day), sortedSetKey);
+
+    for (const record of groupRecords) {
+      const id = `${record.memberId}:${timestamp}`;
+      const historyRecord: HistoryRecord = {
+        id,
+        memberId: record.memberId,
+        memberName: record.memberName,
+        memberAvatar: record.memberAvatar,
+        eventId: record.eventId,
+        eventName: record.eventName,
+        sessionId: record.sessionId,
+        sessionName: record.sessionName,
+        timestamp,
+        waitingCount: record.waitingCount,
+        waitingTime: record.waitingTime,
+        avgWaitTime: record.avgWaitTime ?? (record.waitingCount > 0 ? Math.floor(record.waitingTime / record.waitingCount) : 0),
+      };
+      pipeline.zadd(sortedSetKey, { score: timestamp, member: JSON.stringify(historyRecord) });
+      memberIdsInBatch.add(record.memberId);
+    }
+
+    pipeline.expire(sortedSetKey, DEFAULT_TTL_SECONDS);
+  }
+
+  await pipeline.exec();
+  await updateDayIndex(day, records, memberIdsInBatch.size, timestamp);
+
+  return { saved: records.length, failed: 0, timestamp, day };
 }
 
 /** Paginated ZRANGE to avoid Upstash 10MB response limit */
@@ -172,6 +410,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
       case 'events': return await handleGetDayEvents(req, res);
       case 'details': return await handleGetDayDetails(req, res);
       case 'diag': return await handleGetDiag(req, res);
+      case 'collector-diag': return await handleGetCollectorDiag(req, res);
       default: return await handleGetLegacy(req, res);
     }
   } catch (error) {
@@ -198,39 +437,83 @@ async function handleGetDiag(_req: VercelRequest, res: VercelResponse) {
   });
 }
 
+async function handleGetCollectorDiag(req: VercelRequest, res: VercelResponse) {
+  const logsLimit = Math.min(parseInt(String(req.query.logsLimit ?? '30')) || 30, 100);
+  const snapshotsLimit = Math.min(parseInt(String(req.query.snapshotsLimit ?? '20')) || 20, 120);
+  const kv = getKv();
+  const [status, lastSuccess, logsRaw, snapshotsRaw] = await Promise.all([
+    kv.get(COLLECTOR_STATUS_KEY),
+    kv.get(COLLECTOR_LAST_SUCCESS_KEY),
+    kv.lrange(COLLECTOR_LOGS_KEY, 0, logsLimit - 1),
+    kv.lrange(COLLECTOR_SNAPSHOTS_KEY, 0, snapshotsLimit - 1),
+  ]);
+
+  const parseJsonItem = (item: unknown) => {
+    if (typeof item === 'string') {
+      try {
+        return JSON.parse(item);
+      } catch {
+        return item;
+      }
+    }
+    return item;
+  };
+
+  res.status(200).json({
+    status,
+    lastSuccess,
+    logs: Array.isArray(logsRaw) ? logsRaw.map(parseJsonItem) : [],
+    snapshots: Array.isArray(snapshotsRaw) ? snapshotsRaw.map(parseJsonItem) : [],
+  });
+}
+
 /** mode=days: Compute from sorted set keys (not cached day index) */
 async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
-  const keys = await getKv().keys('history:ts:*');
-  if (!keys || keys.length === 0) {
+  const days = await getIndexedDays();
+  if (days.length === 0) {
     res.status(200).json({ days: [] });
     return;
   }
 
-  // Pipeline ZCARD for all sorted set keys
+  const allKeys: string[] = [];
+  const dayKeysMap = new Map<string, string[]>();
+  for (const day of days) {
+    const keys = await getDayTsKeys(day);
+    dayKeysMap.set(day, keys);
+    allKeys.push(...keys);
+  }
+
+  if (allKeys.length === 0) {
+    res.status(200).json({ days: [] });
+    return;
+  }
+
   const pipeline = getKv().pipeline();
-  for (const key of keys as string[]) {
+  for (const key of allKeys) {
     pipeline.zcard(key);
   }
   const counts = await pipeline.exec();
 
-  // Group by day
   const dayMap = new Map<string, { eventIds: Set<number>; sessionIds: Set<number>; totalRecords: number }>();
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i] as string;
-    const parts = key.split(':'); // history:ts:day:eventId:sessionId
-    const day = parts[2] ?? '';
-    const eventId = parseInt(parts[3] ?? '');
-    const sessionId = parseInt(parts[4] ?? '');
-    const count = (counts[i] as number) || 0;
-    if (count === 0) continue;
+  let offset = 0;
+  for (const day of days) {
+    const keys = dayKeysMap.get(day) || [];
+    for (const key of keys) {
+      const parts = key.split(':');
+      const eventId = parseInt(parts[3] ?? '');
+      const sessionId = parseInt(parts[4] ?? '');
+      const count = (counts[offset] as number) || 0;
+      offset += 1;
+      if (count === 0) continue;
 
-    if (!dayMap.has(day)) {
-      dayMap.set(day, { eventIds: new Set(), sessionIds: new Set(), totalRecords: 0 });
+      if (!dayMap.has(day)) {
+        dayMap.set(day, { eventIds: new Set(), sessionIds: new Set(), totalRecords: 0 });
+      }
+      const entry = dayMap.get(day)!;
+      entry.eventIds.add(eventId);
+      entry.sessionIds.add(sessionId);
+      entry.totalRecords += count;
     }
-    const entry = dayMap.get(day)!;
-    entry.eventIds.add(eventId);
-    entry.sessionIds.add(sessionId);
-    entry.totalRecords += count;
   }
 
   const days = Array.from(dayMap.entries()).map(([day, entry]) => ({
@@ -252,7 +535,7 @@ async function handleGetDayEvents(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const keys = await getKv().keys(`history:ts:${day}:*`);
+  const keys = await getDayTsKeys(day);
   if (!keys || keys.length === 0) {
     res.status(200).json({ day, events: [] });
     return;
@@ -331,9 +614,9 @@ async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
   } else {
     // Fuzzy query: scan sorted set keys under this day
     const pattern = eventId
-      ? `history:ts:${day}:${parseInt(eventId as string)}:*`
-      : `history:ts:${day}:*`;
-    const keys = await getKv().keys(pattern);
+      ? `history:ts:${day}:${parseInt(eventId as string)}:`
+      : `history:ts:${day}:`;
+    const keys = (await getDayTsKeys(day)).filter((key) => key.startsWith(pattern));
 
     for (const key of (keys || []) as string[]) {
       if (allRecords.length >= maxRecords) break;
@@ -363,7 +646,7 @@ async function handleGetLegacy(req: VercelRequest, res: VercelResponse) {
     const maxRecords = Math.min(parseInt(limit as string) || 1000, 5000);
 
     // Scan sorted set keys
-    const keys = await getKv().keys('history:ts:*');
+    const keys = await getAllTsKeys();
     if (!keys || keys.length === 0) {
       res.status(200).json({ records: [], count: 0 });
       return;
@@ -412,77 +695,16 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
 
   const { records, eventDay, snapshotTimestamp } = req.body;
 
-  if (!Array.isArray(records) || records.length === 0) {
-    res.status(400).json({ error: 'Invalid records: must be a non-empty array' });
-    return;
-  }
-  if (records.length > MAX_RECORDS_PER_REQUEST) {
-    res.status(400).json({ error: `Too many records: max ${MAX_RECORDS_PER_REQUEST}` });
-    return;
-  }
-  for (let i = 0; i < records.length; i++) {
-    const validationError = validateRecord(records[i]);
-    if (validationError) {
-      res.status(400).json({ error: `Record[${i}]: ${validationError}` });
-      return;
-    }
-  }
-
   try {
-    const timestamp = typeof snapshotTimestamp === 'number' && Number.isFinite(snapshotTimestamp) && snapshotTimestamp > 0
-      ? Math.floor(snapshotTimestamp)
-      : Date.now();
-    // Use event day from client if provided, otherwise compute from current time
-    const day = (typeof eventDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(eventDay))
-      ? eventDay
-      : timestampToJSTDay(timestamp);
-
-    // Group records by eventId+sessionId
-    const groups = new Map<string, any[]>();
-    for (const record of records) {
-      const groupKey = `${record.eventId}:${record.sessionId}`;
-      let group = groups.get(groupKey);
-      if (!group) { group = []; groups.set(groupKey, group); }
-      group.push(record);
-    }
-
-    const pipeline = getKv().pipeline();
-    const memberIdsInBatch = new Set<string>();
-
-    for (const [groupKey, groupRecords] of groups) {
-      const [eid = 0, sid = 0] = groupKey.split(':').map(Number);
-      const sortedSetKey = tsKey(day, eid, sid);
-
-      for (const record of groupRecords) {
-        const id = `${record.memberId}:${timestamp}`;
-        const historyRecord: HistoryRecord = {
-          id,
-          memberId: record.memberId,
-          memberName: record.memberName,
-          memberAvatar: record.memberAvatar,
-          eventId: record.eventId,
-          eventName: record.eventName,
-          sessionId: record.sessionId,
-          sessionName: record.sessionName,
-          timestamp,
-          waitingCount: record.waitingCount,
-          waitingTime: record.waitingTime,
-          avgWaitTime: record.avgWaitTime ?? (record.waitingCount > 0 ? Math.floor(record.waitingTime / record.waitingCount) : 0),
-        };
-        pipeline.zadd(sortedSetKey, { score: timestamp, member: JSON.stringify(historyRecord) });
-        memberIdsInBatch.add(record.memberId);
-      }
-      // Refresh TTL on each write
-      pipeline.expire(sortedSetKey, DEFAULT_TTL_SECONDS);
-    }
-
-    await pipeline.exec();
-    await updateDayIndex(day, records, memberIdsInBatch.size, timestamp);
-
-    res.status(200).json({ success: true, saved: records.length, failed: 0 });
+    const result = await writeHistoryRecords({ records, eventDay, snapshotTimestamp });
+    res.status(200).json({ success: true, saved: result.saved, failed: result.failed, timestamp: result.timestamp, day: result.day });
   } catch (error) {
     console.error('KV post error:', error);
-    res.status(500).json({ error: 'Failed to save history' });
+    const message = error instanceof Error ? error.message : 'Failed to save history';
+    const status = message.startsWith('Invalid records') || message.startsWith('Too many records') || message.startsWith('Record[')
+      ? 400
+      : (message === 'KV not configured' ? 503 : 500);
+    res.status(status).json({ error: message });
   }
 }
 
@@ -566,50 +788,73 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
 
     // Delete all data for a specific day
     if (deleteDay && typeof deleteDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deleteDay)) {
-      const tsKeys = await getKv().keys(`history:ts:${deleteDay}:*`);
-      const dayKey = dayIndexKey(deleteDay);
-      const allKeys = [...(tsKeys as string[]), dayKey];
-      if (allKeys.length > 0) {
-        const pipeline = getKv().pipeline();
-        for (const key of allKeys) {
-          pipeline.del(key);
+      const tsKeys = await getDayTsKeys(deleteDay);
+      if (tsKeys.length > 0) {
+        const countPipeline = getKv().pipeline();
+        for (const key of tsKeys) {
+          countPipeline.zcard(key);
         }
+        const counts = await countPipeline.exec();
+        deleted += counts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+
+        const pipeline = getKv().pipeline();
+        for (const key of tsKeys) {
+          pipeline.del(key);
+          pipeline.srem(daySessionsIndexKey(deleteDay), key);
+        }
+        pipeline.del(daySessionsIndexKey(deleteDay));
+        pipeline.srem(HISTORY_DAYS_INDEX_KEY, deleteDay);
+        pipeline.del(dayIndexKey(deleteDay));
         await pipeline.exec();
-        deleted += allKeys.length;
       }
     }
 
     if (beforeTimestamp) {
       const cutoffDay = timestampToJSTDay(beforeTimestamp);
 
-      // Delete expired day index keys
-      const dayKeys = await getKv().keys('history:day:*');
-      const dayKeysToDelete = (dayKeys as string[]).filter(k => {
-        const d = k.replace('history:day:', '');
-        return d < cutoffDay;
-      });
+      const days = await getIndexedDays();
+      const olderDays = days.filter((day) => day < cutoffDay);
 
-      // Delete expired sorted set keys
-      const tsKeys = await getKv().keys('history:ts:*');
-      const tsKeysToDelete = (tsKeys as string[]).filter(k => {
-        const parts = k.split(':');
-        return (parts[2] ?? '') < cutoffDay;
-      });
-
-      const allKeysToDelete = [...dayKeysToDelete, ...tsKeysToDelete];
-      if (allKeysToDelete.length > 0) {
-        const pipeline = getKv().pipeline();
-        for (const key of allKeysToDelete) {
-          pipeline.del(key);
+      for (const day of olderDays) {
+        const tsKeys = await getDayTsKeys(day);
+        if (tsKeys.length === 0) {
+          await pruneEmptyDays([day]);
+          continue;
         }
+
+        const countPipeline = getKv().pipeline();
+        for (const key of tsKeys) {
+          countPipeline.zcard(key);
+        }
+        const counts = await countPipeline.exec();
+        deleted += counts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+
+        const pipeline = getKv().pipeline();
+        for (const key of tsKeys) {
+          pipeline.del(key);
+          pipeline.srem(daySessionsIndexKey(day), key);
+        }
+        pipeline.del(daySessionsIndexKey(day));
+        pipeline.srem(HISTORY_DAYS_INDEX_KEY, day);
+        pipeline.del(dayIndexKey(day));
         await pipeline.exec();
-        deleted = allKeysToDelete.length;
+      }
+
+      const cutoffKeys = await getDayTsKeys(cutoffDay);
+      if (cutoffKeys.length > 0) {
+        const removePipeline = getKv().pipeline();
+        for (const key of cutoffKeys) {
+          removePipeline.zremrangebyscore(key, 0, beforeTimestamp - 1);
+        }
+        const removedCounts = await removePipeline.exec();
+        deleted += removedCounts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+        await pruneEmptyTsKeys(cutoffKeys);
       }
     }
 
     if (memberIds && Array.isArray(memberIds) && memberIds.length > 0) {
-      const tsKeys = await getKv().keys('history:ts:*');
-      for (const key of tsKeys as string[]) {
+      const tsKeys = await getAllTsKeys();
+      for (const key of tsKeys) {
         // Paginated scan to avoid 10MB response limit
         let offset = 0;
         while (true) {
@@ -635,6 +880,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
           if (batch.length < ZRANGE_PAGE_SIZE) break;
         }
       }
+      await pruneEmptyTsKeys(tsKeys);
     }
 
     res.status(200).json({ success: true, deleted });

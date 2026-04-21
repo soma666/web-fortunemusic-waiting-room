@@ -148,6 +148,41 @@ export interface HistoryDetailFilter {
   limit?: number;
 }
 
+export interface CollectorLogEntry {
+  ts: number;
+  level: 'info' | 'warn' | 'error';
+  event: string;
+  message: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface CollectorSnapshotSummary {
+  timestamp: number;
+  events: number;
+  sessions: number;
+  records: number;
+}
+
+export interface CollectorStatus {
+  state: 'running' | 'idle' | 'error';
+  startedAt?: number;
+  finishedAt?: number;
+  failedAt?: number;
+  mode?: 'once' | 'cron';
+  totalRecords?: number;
+  totalSessions?: number;
+  snapshotCount?: number;
+  lastSnapshotAt?: number | null;
+  error?: string;
+}
+
+export interface CollectorDiag {
+  status: CollectorStatus | null;
+  lastSuccess: CollectorStatus | null;
+  logs: CollectorLogEntry[];
+  snapshots: CollectorSnapshotSummary[];
+}
+
 /**
  * 历史面板浏览阶段
  * 控制面板 UI 当前显示的层级

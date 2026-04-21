@@ -1,5 +1,11 @@
 {
   "outputDirectory": "dist",
+  "crons": [
+    {
+      "path": "/api/collect-history",
+      "schedule": "* * * * *"
+    }
+  ],
   "rewrites": [
     { "source": "/api/history", "destination": "/api/history" }
   ],
@@ -7,6 +13,10 @@
     "api/history.ts": {
       "memory": 1024,
       "maxDuration": 10
+    },
+    "api/collect-history.ts": {
+      "memory": 1024,
+      "maxDuration": 60
     }
   }
 }

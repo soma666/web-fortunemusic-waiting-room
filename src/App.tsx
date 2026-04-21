@@ -13,8 +13,6 @@ import { EventCard } from "@/components/EventCard";
 import { StatsBar } from "@/components/StatsBar";
 import { WaitingRoomGrid } from "@/components/WaitingRoomGrid";
 import { Sidebar } from "@/components/Sidebar";
-import { saveBatchHistoryRecords } from "@/lib/history-api";
-import type { HistoryBatchRecord } from "@/lib/history-types";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { REFRESH_INTERVAL_MS, POLL_CHECK_INTERVAL_MS } from "@/lib/constants";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -53,24 +51,6 @@ function filterWaitingRoomsBySession(
 ): Map<number, WaitingRoom[]> {
   const rooms = waitingRooms.get(sessionId) || [];
   return new Map([[sessionId, rooms]]);
-}
-
-function isSameLocalDay(left: Date, right: Date): boolean {
-  return left.getFullYear() === right.getFullYear()
-    && left.getMonth() === right.getMonth()
-    && left.getDate() === right.getDate();
-}
-
-function getTodayEvents(eventMap: Map<number, Event[]>, now: Date): Event[] {
-  const result: Event[] = [];
-  eventMap.forEach((eventList) => {
-    eventList.forEach((event) => {
-      if (isSameLocalDay(event.date, now)) {
-        result.push(event);
-      }
-    });
-  });
-  return result;
 }
 
 export function App() {
@@ -152,67 +132,6 @@ export function App() {
     nextRefreshTimeRef.current = nextTime;
     setRefreshCountdown(REFRESH_INTERVAL);
   }, []);
-
-  const persistActiveEventSnapshot = useCallback(async (event: Event, sampleTimestamp: number) => {
-    const now = new Date();
-    const activeSessions = Array.from(event.sessions.values()).filter(
-      (session) => now >= session.startTime && now <= session.endTime,
-    );
-    if (activeSessions.length === 0) {
-      return;
-    }
-
-    const representativeSession = activeSessions[0];
-    if (!representativeSession) {
-      return;
-    }
-
-    const wr = await fetchWaitingRooms(representativeSession.id);
-    const eventMembers = extractMembers(event.sessions);
-    const eventDay = `${event.date.getFullYear()}-${String(event.date.getMonth() + 1).padStart(2, '0')}-${String(event.date.getDate()).padStart(2, '0')}`;
-
-    for (const session of activeSessions) {
-      const rooms = wr.waitingRooms.get(session.id) || [];
-      if (rooms.length === 0) {
-        continue;
-      }
-
-      const records: HistoryBatchRecord[] = rooms.map((room) => {
-        const member = eventMembers.get(room.ticketCode);
-        return {
-          memberId: room.ticketCode,
-          memberName: member?.name || room.ticketCode,
-          memberAvatar: member?.thumbnailUrl,
-          eventId: event.id,
-          eventName: event.name,
-          sessionId: session.id,
-          sessionName: session.name,
-          waitingCount: room.peopleCount,
-          waitingTime: room.waitingTime,
-          avgWaitTime: room.peopleCount > 0 ? Math.floor(room.waitingTime / room.peopleCount) : 0,
-        };
-      });
-
-      const nonZero = records.filter((record) => record.waitingCount > 0 || record.waitingTime > 0);
-      console.log(`[DIAG] Background save event=${event.id} session=${session.id} records=${records.length} nonZero=${nonZero.length}`);
-      const saved = await saveBatchHistoryRecords(records, eventDay, sampleTimestamp);
-      if (!saved) {
-        console.warn(`Failed to save history records for event=${event.id} session=${session.id}`);
-      }
-    }
-  }, []);
-
-  const persistAllActiveEvents = useCallback(async (sampleTimestamp: number) => {
-    const now = new Date();
-    const todayEvents = getTodayEvents(events, now);
-    for (const event of todayEvents) {
-      try {
-        await persistActiveEventSnapshot(event, sampleTimestamp);
-      } catch (error) {
-        console.error(`Failed to persist active event ${event.id}:`, error);
-      }
-    }
-  }, [events, persistActiveEventSnapshot]);
 
   const loadWaitingRoomSnapshot = useCallback(async (sessionId: number) => {
     const wr = await fetchWaitingRooms(sessionId);
@@ -331,7 +250,6 @@ export function App() {
         void (async () => {
           try {
             await refreshWaitingRooms();
-            await persistAllActiveEvents(sampleTimestamp);
           } finally {
             refreshInFlightRef.current = false;
           }
@@ -342,7 +260,7 @@ export function App() {
       }
     }, POLL_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [loading, persistAllActiveEvents, refreshWaitingRooms, scheduleNextRefresh, selectedSession]);
+  }, [loading, refreshWaitingRooms, scheduleNextRefresh, selectedSession]);
 
   // ========== Render ==========
   return (

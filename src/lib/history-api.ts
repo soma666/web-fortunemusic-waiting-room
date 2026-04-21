@@ -19,6 +19,7 @@ import type {
   DaySummary,
   DayEventSummary,
   HistoryDetailFilter,
+  CollectorDiag,
 } from './history-types';
 
 /** API 基础路径 */
@@ -423,5 +424,22 @@ export async function fetchDayDetails(filter: HistoryDetailFilter): Promise<Hist
   } catch (error) {
     console.error('Failed to fetch day details:', error);
     return [];
+  }
+}
+
+export async function fetchCollectorDiag(
+  logsLimit = 30,
+  snapshotsLimit = 20,
+): Promise<CollectorDiag | null> {
+  const params = new URLSearchParams();
+  params.set('mode', 'collector-diag');
+  params.set('logsLimit', String(logsLimit));
+  params.set('snapshotsLimit', String(snapshotsLimit));
+
+  try {
+    return await apiRequest<CollectorDiag>(`/history?${params.toString()}`);
+  } catch (error) {
+    console.error('Failed to fetch collector diag:', error);
+    return null;
   }
 }

@@ -133,6 +133,73 @@ bun start
 
 ---
 
+## 2026-04-21 Cron 部署检查步骤
+
+历史采集现在由 Vercel Cron 触发 `/api/collect-history`，部署后应按下面顺序验证。
+
+### 目标
+
+- 确认 cron 已被平台识别
+- 确认 collector 实际执行过
+- 确认执行状态、日志、采样摘要能被看到
+
+### 检查步骤
+
+1. 推送到 `main`，等待 Vercel 部署完成。
+2. 打开部署后的站点，进入 History 面板首页。
+3. 确认顶部出现“采集器状态”卡片。
+4. 等待 1 到 2 分钟后刷新页面，检查卡片中的以下字段是否更新：
+   - 最近成功
+   - 最近采样数
+   - 最近写入记录
+   - 最近采样
+   - 最近日志
+5. 如果页面未更新，直接访问部署环境的诊断接口：
+
+```text
+/api/history?mode=collector-diag
+```
+
+### 成功判定
+
+- `status.state` 为 `idle` 或短暂为 `running`
+- `lastSuccess.finishedAt` 有值
+- `logs` 中能看到 `run-start`、`snapshot-complete`、`run-complete`
+- `snapshots` 中至少有一条最近采样记录
+
+### 异常判定
+
+- `status.state = error`
+- `logs` 中出现 `run-failed`
+- 持续只有 `lock-conflict`
+- 2 分钟后仍然没有 `lastSuccess`
+
+### 异常时优先检查
+
+1. Vercel 项目是否已配置 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`
+2. 是否配置了 `CRON_SECRET`
+3. `vercel.json` 中的 `crons` 配置是否已随本次部署生效
+4. Vercel Function Logs 中 `/api/collect-history` 是否有调用记录
+
+### 手动补验
+
+如果需要绕过等待 cron，可以手动请求一次 collector：
+
+```text
+GET /api/collect-history?mode=once
+Authorization: Bearer <CRON_SECRET>
+```
+
+然后再次访问：
+
+```text
+/api/history?mode=collector-diag
+```
+
+如果手动触发成功而 cron 无记录，问题通常在平台 cron 配置或部署生效阶段，而不是 collector 本身。
+
+---
+
 ### 文件结构关键路径
 
 ```
