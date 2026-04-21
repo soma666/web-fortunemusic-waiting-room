@@ -25,7 +25,7 @@ import "./index.css";
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 600;
 const DEFAULT_SIDEBAR_WIDTH = 300;
-const REFRESH_INTERVAL = 10; // seconds
+const REFRESH_INTERVAL = REFRESH_INTERVAL_MS / 1000;
 
 function extractMembers(sessions: Map<number, Session>): Map<string, Member> {
   let members = new Map<string, Member>();
@@ -45,6 +45,32 @@ function calculateTotalWaitingPeople(waitingRooms: Map<number, WaitingRoom[]>): 
     });
   });
   return total;
+}
+
+function filterWaitingRoomsBySession(
+  waitingRooms: Map<number, WaitingRoom[]>,
+  sessionId: number,
+): Map<number, WaitingRoom[]> {
+  const rooms = waitingRooms.get(sessionId) || [];
+  return new Map([[sessionId, rooms]]);
+}
+
+function isSameLocalDay(left: Date, right: Date): boolean {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function getTodayEvents(eventMap: Map<number, Event[]>, now: Date): Event[] {
+  const result: Event[] = [];
+  eventMap.forEach((eventList) => {
+    eventList.forEach((event) => {
+      if (isSameLocalDay(event.date, now)) {
+        result.push(event);
+      }
+    });
+  });
+  return result;
 }
 
 export function App() {
@@ -116,8 +142,91 @@ export function App() {
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + REFRESH_INTERVAL_MS));
   const nextRefreshTimeRef = useRef<Date>(nextRefreshTime);
+  const refreshInFlightRef = useRef(false);
   const [refreshCountdown, setRefreshCountdown] = useState<number>(REFRESH_INTERVAL);
   const [showHistory, setShowHistory] = useState(false);
+
+  const scheduleNextRefresh = useCallback((baseTimestamp = Date.now()) => {
+    const nextTime = new Date(baseTimestamp + REFRESH_INTERVAL_MS);
+    setNextRefreshTime(nextTime);
+    nextRefreshTimeRef.current = nextTime;
+    setRefreshCountdown(REFRESH_INTERVAL);
+  }, []);
+
+  const persistActiveEventSnapshot = useCallback(async (event: Event, sampleTimestamp: number) => {
+    const now = new Date();
+    const activeSessions = Array.from(event.sessions.values()).filter(
+      (session) => now >= session.startTime && now <= session.endTime,
+    );
+    if (activeSessions.length === 0) {
+      return;
+    }
+
+    const representativeSession = activeSessions[0];
+    if (!representativeSession) {
+      return;
+    }
+
+    const wr = await fetchWaitingRooms(representativeSession.id);
+    const eventMembers = extractMembers(event.sessions);
+    const eventDay = `${event.date.getFullYear()}-${String(event.date.getMonth() + 1).padStart(2, '0')}-${String(event.date.getDate()).padStart(2, '0')}`;
+
+    for (const session of activeSessions) {
+      const rooms = wr.waitingRooms.get(session.id) || [];
+      if (rooms.length === 0) {
+        continue;
+      }
+
+      const records: HistoryBatchRecord[] = rooms.map((room) => {
+        const member = eventMembers.get(room.ticketCode);
+        return {
+          memberId: room.ticketCode,
+          memberName: member?.name || room.ticketCode,
+          memberAvatar: member?.thumbnailUrl,
+          eventId: event.id,
+          eventName: event.name,
+          sessionId: session.id,
+          sessionName: session.name,
+          waitingCount: room.peopleCount,
+          waitingTime: room.waitingTime,
+          avgWaitTime: room.peopleCount > 0 ? Math.floor(room.waitingTime / room.peopleCount) : 0,
+        };
+      });
+
+      const nonZero = records.filter((record) => record.waitingCount > 0 || record.waitingTime > 0);
+      console.log(`[DIAG] Background save event=${event.id} session=${session.id} records=${records.length} nonZero=${nonZero.length}`);
+      const saved = await saveBatchHistoryRecords(records, eventDay, sampleTimestamp);
+      if (!saved) {
+        console.warn(`Failed to save history records for event=${event.id} session=${session.id}`);
+      }
+    }
+  }, []);
+
+  const persistAllActiveEvents = useCallback(async (sampleTimestamp: number) => {
+    const now = new Date();
+    const todayEvents = getTodayEvents(events, now);
+    for (const event of todayEvents) {
+      try {
+        await persistActiveEventSnapshot(event, sampleTimestamp);
+      } catch (error) {
+        console.error(`Failed to persist active event ${event.id}:`, error);
+      }
+    }
+  }, [events, persistActiveEventSnapshot]);
+
+  const loadWaitingRoomSnapshot = useCallback(async (sessionId: number) => {
+    const wr = await fetchWaitingRooms(sessionId);
+    const filteredWaitingRooms = filterWaitingRoomsBySession(wr.waitingRooms, sessionId);
+    if (wr.message) {
+      setNotice(wr.message);
+    } else {
+      setNotice(null);
+    }
+    setWaitingRooms(filteredWaitingRooms);
+    setTotalWaitingPeople(calculateTotalWaitingPeople(filteredWaitingRooms));
+    setLastUpdate(new Date());
+    return filteredWaitingRooms;
+  }, []);
 
   // ========== Initial data load ==========
   useEffect(() => {
@@ -136,15 +245,8 @@ export function App() {
         setSelectedSession(defaultSessions);
         let existedMembers = extractMembers(defaultEvent.sessions);
         setMembers(existedMembers);
-        let wr = await fetchWaitingRooms(defaultSessions.id);
-        if (wr.message) { setNotice(wr.message); } else { setNotice(null); }
-        setWaitingRooms(wr.waitingRooms);
-        setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
-        setLastUpdate(new Date());
-        const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
-        setNextRefreshTime(nextTime);
-        nextRefreshTimeRef.current = nextTime;
-        setRefreshCountdown(REFRESH_INTERVAL);
+        await loadWaitingRoomSnapshot(defaultSessions.id);
+        scheduleNextRefresh();
       } catch (err) {
         console.error("Failed to load events:", err);
         setError(err instanceof Error ? err.message : "Failed to load events");
@@ -153,69 +255,24 @@ export function App() {
       }
     };
     loadData();
-  }, []);
+  }, [loadWaitingRoomSnapshot, scheduleNextRefresh]);
 
   // ========== Refresh waiting rooms ==========
-  const refreshWaitingRooms = useCallback(async (sessionId?: number) => {
+  const refreshWaitingRooms = useCallback(async (
+    options: {
+      sessionId?: number;
+    } = {}
+  ) => {
+    const { sessionId } = options;
     const targetSessionId = sessionId || selectedSession?.id;
     if (!targetSessionId) return;
 
     try {
-      const wr = await fetchWaitingRooms(targetSessionId);
-      if (wr.message) { setNotice(wr.message); } else { setNotice(null); }
-      setWaitingRooms(wr.waitingRooms);
-      setTotalWaitingPeople(calculateTotalWaitingPeople(wr.waitingRooms));
-
-      const records: HistoryBatchRecord[] = [];
-      wr.waitingRooms.forEach((rooms, sid) => {
-        rooms.forEach((room) => {
-          const member = members.get(room.ticketCode);
-          records.push({
-            memberId: room.ticketCode,
-            memberName: member?.name || room.ticketCode,
-            memberAvatar: member?.thumbnailUrl,
-            eventId: selectedEvent?.id || 0,
-            eventName: selectedEvent?.name || '',
-            sessionId: sid,
-            sessionName: selectedSession?.name || '',
-            waitingCount: room.peopleCount,
-            waitingTime: room.waitingTime,
-            avgWaitTime: room.peopleCount > 0 ? Math.floor(room.waitingTime / room.peopleCount) : 0,
-          });
-        });
-      });
-
-      if (records.length > 0) {
-        // Only save when the event session is currently active (between startTime and endTime)
-        const now = new Date();
-        const isSessionActive = selectedSession
-          && now >= selectedSession.startTime
-          && now <= selectedSession.endTime;
-
-        if (isSessionActive) {
-          const nonZero = records.filter(r => r.waitingCount > 0 || r.waitingTime > 0);
-          console.log(`[DIAG] Session active, saving ${records.length} records (${nonZero.length} non-zero)`);
-
-          // Use event date to determine storage day, preventing cross-midnight misclassification
-          const eventDay = selectedEvent?.date
-            ? `${selectedEvent.date.getFullYear()}-${String(selectedEvent.date.getMonth() + 1).padStart(2, '0')}-${String(selectedEvent.date.getDate()).padStart(2, '0')}`
-            : undefined;
-          const saved = await saveBatchHistoryRecords(records, eventDay);
-          if (!saved) console.warn("Failed to save history records");
-        } else {
-          console.log(`[DIAG] Session not active, skipping save (now=${now.toISOString()}, start=${selectedSession?.startTime?.toISOString()}, end=${selectedSession?.endTime?.toISOString()})`);
-        }
-      }
-
-      setLastUpdate(new Date());
-      const nextTime = new Date(Date.now() + REFRESH_INTERVAL_MS);
-      setNextRefreshTime(nextTime);
-      nextRefreshTimeRef.current = nextTime;
-      setRefreshCountdown(REFRESH_INTERVAL);
+      await loadWaitingRoomSnapshot(targetSessionId);
     } catch (err) {
       console.error("Failed to refresh waiting rooms:", err);
     }
-  }, [selectedSession?.id, selectedEvent?.id, selectedEvent?.name, selectedSession?.name, members]);
+  }, [loadWaitingRoomSnapshot, selectedSession?.id]);
 
   // ========== Event selection (sidebar) ==========
   const handleEventSelect = useCallback((uniqueId: string) => {
@@ -251,9 +308,12 @@ export function App() {
   // ========== Session change → refresh ==========
   useEffect(() => {
     if (selectedSession && !loading) {
-      refreshWaitingRooms(selectedSession.id);
+      if (waitingRooms.has(selectedSession.id)) {
+        return;
+      }
+      refreshWaitingRooms({ sessionId: selectedSession.id });
     }
-  }, [selectedSession?.id]);
+  }, [loading, refreshWaitingRooms, selectedSession?.id, waitingRooms]);
 
   // ========== Auto-refresh countdown ==========
   useEffect(() => {
@@ -262,14 +322,27 @@ export function App() {
     const interval = setInterval(() => {
       const now = new Date();
       if (now >= nextRefreshTimeRef.current) {
-        refreshWaitingRooms();
+        if (refreshInFlightRef.current) {
+          return;
+        }
+        const sampleTimestamp = nextRefreshTimeRef.current.getTime();
+        refreshInFlightRef.current = true;
+        scheduleNextRefresh(sampleTimestamp);
+        void (async () => {
+          try {
+            await refreshWaitingRooms();
+            await persistAllActiveEvents(sampleTimestamp);
+          } finally {
+            refreshInFlightRef.current = false;
+          }
+        })();
       } else {
         const remaining = Math.max(0, Math.ceil((nextRefreshTimeRef.current.getTime() - now.getTime()) / 1000));
         setRefreshCountdown(remaining);
       }
     }, POLL_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [loading, selectedSession, refreshWaitingRooms]);
+  }, [loading, persistAllActiveEvents, refreshWaitingRooms, scheduleNextRefresh, selectedSession]);
 
   // ========== Render ==========
   return (

@@ -306,14 +306,14 @@ async function handleGetDayEvents(req: VercelRequest, res: VercelResponse) {
 
 /** mode=details: Precise sorted set query */
 async function handleGetDayDetails(req: VercelRequest, res: VercelResponse) {
-  const { day, eventId, sessionId, memberIds, limit = '1000' } = req.query;
+  const { day, eventId, sessionId, memberIds, limit = '20000' } = req.query;
 
   if (!day || typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     res.status(400).json({ error: 'day parameter required (yyyy-MM-dd)' });
     return;
   }
 
-  const maxRecords = Math.min(parseInt(limit as string) || 1000, 5000);
+  const maxRecords = Math.min(parseInt(limit as string) || 20000, 50000);
   const parsedMemberIds = memberIds
     ? (Array.isArray(memberIds) ? memberIds as string[] : (memberIds as string).split(','))
     : undefined;
@@ -410,7 +410,7 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { records, eventDay } = req.body;
+  const { records, eventDay, snapshotTimestamp } = req.body;
 
   if (!Array.isArray(records) || records.length === 0) {
     res.status(400).json({ error: 'Invalid records: must be a non-empty array' });
@@ -429,7 +429,9 @@ async function handlePost(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const timestamp = Date.now();
+    const timestamp = typeof snapshotTimestamp === 'number' && Number.isFinite(snapshotTimestamp) && snapshotTimestamp > 0
+      ? Math.floor(snapshotTimestamp)
+      : Date.now();
     // Use event day from client if provided, otherwise compute from current time
     const day = (typeof eventDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(eventDay))
       ? eventDay

@@ -91,14 +91,15 @@ export async function fetchHistory(filter: HistoryFilter = {}): Promise<HistoryR
  */
 export async function saveBatchHistoryRecords(
   records: HistoryBatchRecord[],
-  eventDay?: string
+  eventDay?: string,
+  snapshotTimestamp?: number,
 ): Promise<boolean> {
   if (records.length === 0) return false;
 
   try {
     await apiRequest('/history', {
       method: 'POST',
-      body: JSON.stringify({ records, eventDay }),
+      body: JSON.stringify({ records, eventDay, snapshotTimestamp }),
     });
     return true;
   } catch (error) {
@@ -163,7 +164,7 @@ export function calculateChartData(
   // 构建图表数据点
   return sortedTimestamps.map((ts) => {
     const point: ChartDataPoint = {
-      time: new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+      time: new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       timestamp: ts,
     };
 
@@ -412,6 +413,7 @@ export async function fetchDayDetails(filter: HistoryDetailFilter): Promise<Hist
   if (filter.eventId) params.set('eventId', filter.eventId.toString());
   if (filter.sessionId) params.set('sessionId', filter.sessionId.toString());
   if (filter.memberIds?.length) params.set('memberIds', filter.memberIds.join(','));
+  params.set('limit', String(filter.limit ?? 20000));
 
   try {
     const result = await apiRequest<{ day: string; records: HistoryRecord[]; count: number }>(

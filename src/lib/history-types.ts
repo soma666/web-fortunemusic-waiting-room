@@ -145,6 +145,7 @@ export interface HistoryDetailFilter {
   eventId?: number;
   sessionId?: number;
   memberIds?: string[];
+  limit?: number;
 }
 
 /**
