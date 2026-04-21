@@ -432,14 +432,30 @@ export async function fetchCollectorDiag(
   snapshotsLimit = 20,
 ): Promise<CollectorDiag | null> {
   const params = new URLSearchParams();
-  params.set('mode', 'collector-diag');
   params.set('logsLimit', String(logsLimit));
   params.set('snapshotsLimit', String(snapshotsLimit));
 
   try {
-    return await apiRequest<CollectorDiag>(`/history?${params.toString()}`);
+    const primary = await apiRequest<unknown>(`/collector-diag?${params.toString()}`);
+    if (isCollectorDiag(primary)) {
+      return primary;
+    }
+
+    const fallbackParams = new URLSearchParams(params);
+    fallbackParams.set('mode', 'collector-diag');
+    const fallback = await apiRequest<unknown>(`/history?${fallbackParams.toString()}`);
+    return isCollectorDiag(fallback) ? fallback : null;
   } catch (error) {
     console.error('Failed to fetch collector diag:', error);
     return null;
   }
+}
+
+function isCollectorDiag(value: unknown): value is CollectorDiag {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const diag = value as Record<string, unknown>;
+  return Array.isArray(diag.logs) && Array.isArray(diag.snapshots);
 }

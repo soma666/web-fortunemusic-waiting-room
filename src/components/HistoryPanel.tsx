@@ -501,7 +501,7 @@ export function HistoryPanel({
                 <div className="space-y-2">
                   <div className="text-sm font-medium">最近采样</div>
                   <div className="space-y-2">
-                    {collectorDiag.snapshots.length > 0 ? collectorDiag.snapshots.slice(0, 6).map((snapshot) => (
+                    {Array.isArray(collectorDiag.snapshots) && collectorDiag.snapshots.length > 0 ? collectorDiag.snapshots.slice(0, 6).map((snapshot) => (
                       <div key={snapshot.timestamp} className="flex items-center justify-between rounded-lg border p-2 text-sm">
                         <span className="font-mono">{format(new Date(snapshot.timestamp), 'HH:mm:ss')}</span>
                         <span className="text-muted-foreground">活动 {snapshot.events} · 场次 {snapshot.sessions} · 记录 {snapshot.records}</span>
@@ -515,7 +515,7 @@ export function HistoryPanel({
                 <div className="space-y-2">
                   <div className="text-sm font-medium">最近日志</div>
                   <div className="space-y-2">
-                    {collectorDiag.logs.length > 0 ? collectorDiag.logs.slice(0, 6).map((log) => (
+                    {Array.isArray(collectorDiag.logs) && collectorDiag.logs.length > 0 ? collectorDiag.logs.slice(0, 6).map((log) => (
                       <div key={`${log.ts}-${log.event}`} className="rounded-lg border p-2 text-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-mono">{format(new Date(log.ts), 'HH:mm:ss')}</span>

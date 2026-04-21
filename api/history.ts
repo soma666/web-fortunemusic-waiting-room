@@ -103,6 +103,13 @@ function isValidKvConfig(): boolean {
   return !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 }
 
+function getSingleQueryValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
 function validateRecord(record: any): string | null {
   if (!record || typeof record !== 'object') return 'Record must be an object';
   if (typeof record.memberId !== 'string' || record.memberId.length === 0) return 'memberId is required';
@@ -403,7 +410,7 @@ async function handleGet(req: VercelRequest, res: VercelResponse) {
     res.status(503).json({ error: 'KV not configured' });
     return;
   }
-  const { mode } = req.query;
+  const mode = getSingleQueryValue(req.query.mode);
   try {
     switch (mode) {
       case 'days': return await handleGetDays(req, res);
@@ -438,8 +445,8 @@ async function handleGetDiag(_req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleGetCollectorDiag(req: VercelRequest, res: VercelResponse) {
-  const logsLimit = Math.min(parseInt(String(req.query.logsLimit ?? '30')) || 30, 100);
-  const snapshotsLimit = Math.min(parseInt(String(req.query.snapshotsLimit ?? '20')) || 20, 120);
+  const logsLimit = Math.min(parseInt(getSingleQueryValue(req.query.logsLimit) ?? '30') || 30, 100);
+  const snapshotsLimit = Math.min(parseInt(getSingleQueryValue(req.query.snapshotsLimit) ?? '20') || 20, 120);
   const kv = getKv();
   const [status, lastSuccess, logsRaw, snapshotsRaw] = await Promise.all([
     kv.get(COLLECTOR_STATUS_KEY),
@@ -460,6 +467,7 @@ async function handleGetCollectorDiag(req: VercelRequest, res: VercelResponse) {
   };
 
   res.status(200).json({
+    mode: 'collector-diag',
     status,
     lastSuccess,
     logs: Array.isArray(logsRaw) ? logsRaw.map(parseJsonItem) : [],
