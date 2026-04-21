@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Redis } from '@upstash/redis';
-import { writeHistoryRecords } from './history';
 
 const TARGET_ARTIST_NAMES = ['乃木坂46', '櫻坂46', '日向坂46', '=LOVE'];
 const COLLECT_INTERVAL_MS = 20 * 1000;
@@ -27,7 +26,6 @@ interface RawEventsResponse {
 interface RawEvent {
   evtId: number;
   evtName: string;
-  evtPhotUrl: string;
   dateArray: RawDate[];
 }
 
@@ -89,8 +87,24 @@ interface EventSession {
 interface EventSummary {
   id: number;
   name: string;
-  date: Date;
   sessions: Map<number, EventSession>;
+}
+
+interface HistoryWritePayload {
+  records: Array<{
+    memberId: string;
+    memberName: string;
+    memberAvatar?: string;
+    eventId: number;
+    eventName: string;
+    sessionId: number;
+    sessionName: string;
+    waitingCount: number;
+    waitingTime: number;
+    avgWaitTime?: number;
+  }>;
+  eventDay: string;
+  snapshotTimestamp: number;
 }
 
 function getRedis(): Redis {
@@ -105,6 +119,18 @@ function getSingleQueryValue(value: string | string[] | undefined): string | und
     return value[0];
   }
   return value;
+}
+
+function getRequestOrigin(req: VercelRequest): string {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const protocol = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const host = req.headers.host;
+
+  if (!host) {
+    throw new Error('Missing host header');
+  }
+
+  return `${protocol || 'https'}://${host}`;
 }
 
 function parseJstDateTime(dateText: string, timeText: string): Date {
@@ -166,7 +192,6 @@ function parseEventsResponse(data: RawEventsResponse, now: Date): EventSummary[]
         results.push({
           id: event.evtId,
           name: event.evtName,
-          date: new Date(`${dateEntry.dateDate}T00:00:00+09:00`),
           sessions,
         });
       }
@@ -244,7 +269,22 @@ async function fetchWaitingRoomsSnapshot(sessionId: number): Promise<RawWaitingR
   return response.json() as Promise<RawWaitingRoomsResponse>;
 }
 
-async function collectSnapshot(snapshotTimestamp: number): Promise<{ events: number; sessions: number; records: number; }> {
+async function saveHistoryRecords(req: VercelRequest, payload: HistoryWritePayload): Promise<void> {
+  const response = await fetch(`${getRequestOrigin(req)}/api/history`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'Failed to save history records');
+    throw new Error(`History API returned ${response.status}: ${errorText}`);
+  }
+}
+
+async function collectSnapshot(req: VercelRequest, snapshotTimestamp: number): Promise<{ events: number; sessions: number; records: number; }> {
   const now = new Date(snapshotTimestamp);
   const events = await fetchActiveEvents();
   let sessionCount = 0;
@@ -286,7 +326,7 @@ async function collectSnapshot(snapshotTimestamp: number): Promise<{ events: num
         continue;
       }
 
-      await writeHistoryRecords({
+      await saveHistoryRecords(req, {
         records,
         eventDay,
         snapshotTimestamp,
@@ -363,7 +403,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (manualOnce) {
       const timestamp = Math.floor(Date.now() / COLLECT_INTERVAL_MS) * COLLECT_INTERVAL_MS;
-      const snapshot = { timestamp, ...(await collectSnapshot(timestamp)) };
+      const snapshot = { timestamp, ...(await collectSnapshot(req, timestamp)) };
       snapshots.push(snapshot);
       await pushCollectorSnapshot(snapshot);
       await pushCollectorLog({
@@ -382,7 +422,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (waitMs > 0) {
           await delay(waitMs);
         }
-        const snapshot = { timestamp: nextSnapshot, ...(await collectSnapshot(nextSnapshot)) };
+        const snapshot = { timestamp: nextSnapshot, ...(await collectSnapshot(req, nextSnapshot)) };
         snapshots.push(snapshot);
         await pushCollectorSnapshot(snapshot);
         await pushCollectorLog({
