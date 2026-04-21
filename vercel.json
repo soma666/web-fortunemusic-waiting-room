@@ -1,11 +1,5 @@
 {
   "outputDirectory": "dist",
-  "crons": [
-    {
-      "path": "/api/collect-history",
-      "schedule": "* * * * *"
-    }
-  ],
   "rewrites": [
     { "source": "/api/history", "destination": "/api/history" },
     { "source": "/api/collector-diag", "destination": "/api/collector-diag" }
