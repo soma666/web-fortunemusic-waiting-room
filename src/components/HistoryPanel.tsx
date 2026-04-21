@@ -448,15 +448,26 @@ export function HistoryPanel({
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="text-base">采集器状态</CardTitle>
-                <Badge
-                  variant={collectorDiag.status?.state === 'error' ? 'destructive' : 'secondary'}
-                >
-                  {collectorDiag.status?.state === 'running'
-                    ? '运行中'
-                    : collectorDiag.status?.state === 'error'
-                      ? '异常'
-                      : '空闲'}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadDays()}
+                    disabled={loading}
+                  >
+                    刷新状态
+                  </Button>
+                  <Badge
+                    variant={collectorDiag.status?.state === 'error' ? 'destructive' : 'secondary'}
+                  >
+                    {collectorDiag.status?.state === 'running'
+                      ? '运行中'
+                      : collectorDiag.status?.state === 'error'
+                        ? '异常'
+                        : '空闲'}
+                  </Badge>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
