@@ -1,36 +1,67 @@
-/**
- * aggregator.ts - 数据聚合工具
- * 
- * 提供数据聚合和查找功能。
- */
+import type { Event, Session } from "@/api/fortunemusic/events";
 
-import type { Event } from "@/api/fortunemusic/events";
+function getSessionDistance(session: Session, targetTime: Date): number {
+    const target = targetTime.getTime();
+    const start = session.startTime.getTime();
+    const end = session.endTime.getTime();
 
-/**
- * 查找距离目标时间最近的活动
- * 
- * 用于自动选择当前最相关的活动：
- * - 如果有正在进行的活动，返回该活动
- * - 否则返回时间上最接近的活动
- * 
- * @param eventMap - 活动映射表
- * @param targetTime - 目标时间
- * @returns 最近的活动，如果没有则返回 null
- */
+    if (target < start) {
+        return start - target;
+    }
+    if (target > end) {
+        return target - end;
+    }
+    return 0;
+}
+
+export function findNearestSession(event: Event, targetTime: Date): Session | null {
+    let nearestSession: Session | null = null;
+    let smallestTimeDiff = Number.MAX_SAFE_INTEGER;
+
+    event.sessions.forEach((session) => {
+        const timeDiff = getSessionDistance(session, targetTime);
+        if (
+            timeDiff < smallestTimeDiff ||
+            (
+                timeDiff === smallestTimeDiff &&
+                (
+                    nearestSession === null ||
+                    session.startTime.getTime() < nearestSession.startTime.getTime()
+                )
+            )
+        ) {
+            smallestTimeDiff = timeDiff;
+            nearestSession = session;
+        }
+    });
+
+    return nearestSession;
+}
+
 export function findNearestEvent(eventMap: Map<number, Event[]>, targetTime: Date): Event | null {
     let nearestEvent: Event | null = null;
     let smallestTimeDiff = Number.MAX_SAFE_INTEGER;
-    
-    // 遍历所有活动，找到时间差最小的
+    let nearestSessionStart = Number.MAX_SAFE_INTEGER;
+
     eventMap.forEach((events) => {
         events.forEach((event) => {
-            const timeDiff = Math.abs(event.date.getTime() - targetTime.getTime());
-            if (timeDiff < smallestTimeDiff) {
+            const session = findNearestSession(event, targetTime);
+            if (!session) {
+                return;
+            }
+
+            const timeDiff = getSessionDistance(session, targetTime);
+            const sessionStart = session.startTime.getTime();
+            if (
+                timeDiff < smallestTimeDiff ||
+                (timeDiff === smallestTimeDiff && sessionStart < nearestSessionStart)
+            ) {
                 smallestTimeDiff = timeDiff;
+                nearestSessionStart = sessionStart;
                 nearestEvent = event;
             }
         });
     });
-    
+
     return nearestEvent;
 }

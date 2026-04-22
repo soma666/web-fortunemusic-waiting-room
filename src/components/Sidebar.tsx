@@ -52,10 +52,14 @@ function groupEventsByArtistAndDate(events: Map<number, Event[]>): ArtistGroup[]
     });
 
     const dateGroups: DateGroup[] = [];
-    dateMap.forEach((evts, dateKey) => {
+      dateMap.forEach((evts, dateKey) => {
+      const firstEvent = evts[0];
+      if (!firstEvent) {
+        return;
+      }
       dateGroups.push({
         dateKey,
-        dateLabel: format(evts[0].date, 'MM-dd (EEE)'),
+        dateLabel: format(firstEvent.date, 'MM-dd (EEE)'),
         events: evts,
       });
     });

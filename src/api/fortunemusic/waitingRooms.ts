@@ -108,6 +108,7 @@ function flattenWaitingRooms(data: WaitingRoomsAPIResponse): WaitingRooms {
         // 遍历所有成员的等待信息
         Object.keys(timezone.members).forEach((key) => {
             const memberInfo = timezone.members[key];
+            if (!memberInfo) return;
             rooms.push({
                 ticketCode: key,
                 peopleCount: memberInfo.totalCount,

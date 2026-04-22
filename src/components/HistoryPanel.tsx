@@ -11,7 +11,6 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { Switch } from './ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { HistoryChart } from './HistoryChart';
 import {
@@ -19,8 +18,7 @@ import {
   fetchCollectorDiag,
   fetchDayEvents,
   fetchDayDetails,
-  fetchHistory,
-  saveBatchHistoryRecords,
+  importHistoryRecords,
   deleteHistory,
   calculateChartData,
   calculateMemberStats,
@@ -31,6 +29,7 @@ import {
 import type {
   HistorySettings,
   HistoryRecord,
+  HistoryExportPayload,
   DaySummary,
   DayEventSummary,
   HistoryBrowsePhase,
@@ -41,6 +40,22 @@ import { format } from 'date-fns';
 
 /** 播放速度选项 */
 const PLAYBACK_SPEEDS = [0.5, 1, 2, 4];
+
+function extractImportedRecords(payload: unknown): HistoryRecord[] | null {
+  if (Array.isArray(payload)) {
+    return payload as HistoryRecord[];
+  }
+
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    Array.isArray((payload as { records?: unknown[] }).records)
+  ) {
+    return (payload as { records: HistoryRecord[] }).records;
+  }
+
+  return null;
+}
 
 // ========== 组件接口 ==========
 
@@ -336,8 +351,20 @@ export function HistoryPanel({
   // ========== 导入/导出 ==========
 
   const handleExport = () => {
-    const data = JSON.stringify(records, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
+    const data: HistoryExportPayload = {
+      version: 1,
+      exportedAt: Date.now(),
+      day: selectedDay,
+      event: selectedEvent
+        ? { id: selectedEvent.eventId, name: selectedEvent.eventName }
+        : null,
+      session: selectedEvent
+        ? { id: selectedEvent.sessionId, name: selectedEvent.sessionName }
+        : null,
+      records,
+    };
+    const serialized = JSON.stringify(data, null, 2);
+    const blob = new Blob([serialized], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -354,24 +381,12 @@ export function HistoryPanel({
     reader.onload = async (e) => {
       try {
         const json = e.target?.result as string;
-        const imported = JSON.parse(json) as HistoryRecord[];
-        if (!Array.isArray(imported) || imported.length === 0) {
+        const imported = extractImportedRecords(JSON.parse(json));
+        if (!imported || imported.length === 0) {
           alert('导入文件为空或格式不正确');
           return;
         }
-        const saved = await saveBatchHistoryRecords(
-          imported.map((r) => ({
-            memberId: r.memberId,
-            memberName: r.memberName,
-            memberAvatar: r.memberAvatar,
-            eventId: r.eventId,
-            eventName: r.eventName,
-            sessionId: r.sessionId,
-            sessionName: r.sessionName,
-            waitingCount: r.waitingCount,
-            waitingTime: r.waitingTime,
-          }))
-        );
+        const saved = await importHistoryRecords(imported);
         if (saved) {
           // 刷新日期列表
           await loadDays();
@@ -607,7 +622,7 @@ export function HistoryPanel({
         {Array.from(eventGroups.entries()).map(([eventId, sessions]) => (
           <Card key={eventId}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">{sessions[0].eventName}</CardTitle>
+              <CardTitle className="text-base">{sessions[0]?.eventName ?? ''}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {sessions.map((session) => {
@@ -871,7 +886,7 @@ export function HistoryPanel({
           </div>
 
           {/* 底部操作栏 */}
-          <div className="flex-shrink-0 flex items-center justify-between gap-4 pt-4 border-t mt-4">
+          <div className="flex-shrink-0 flex items-center gap-4 pt-4 border-t mt-4">
             <div className="flex gap-2">
               {browsePhase === 'details' && (
                 <Button variant="outline" size="sm" onClick={handleExport}>
@@ -898,14 +913,6 @@ export function HistoryPanel({
               )}
             </div>
 
-            {/* 自动保存开关 */}
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={settings.autoSave}
-                onCheckedChange={(checked) => handleSettingsChange({ autoSave: checked })}
-              />
-              <span className="text-sm">自动保存</span>
-            </div>
           </div>
         </CardContent>
       </Card>

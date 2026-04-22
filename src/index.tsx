@@ -158,8 +158,16 @@ const server = serve({
         }
       },
       async POST(req) {
-        const body = await req.json() as { records?: unknown[] };
-        return handlePost(body.records as any[]);
+        const body = await req.json() as {
+          records?: unknown[];
+          eventDay?: string;
+          snapshotTimestamp?: number;
+        };
+        return handlePost(
+          body.records as Parameters<typeof handlePost>[0],
+          body.eventDay,
+          body.snapshotTimestamp,
+        );
       },
       async DELETE(req) {
         const body = await req.json() as { beforeTimestamp?: number; memberIds?: string[] };

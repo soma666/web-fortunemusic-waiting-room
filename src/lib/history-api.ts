@@ -11,6 +11,7 @@
 import type {
   HistoryRecord,
   HistoryBatchRecord,
+  HistoryBatchWritePayload,
   HistoryFilter,
   HistorySummary,
   MemberStats,
@@ -24,6 +25,8 @@ import type {
 
 /** API 基础路径 */
 const API_BASE = '/api';
+const MAX_HISTORY_WRITE_BATCH = 200;
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 // ========== API 请求工具函数 ==========
 
@@ -51,6 +54,51 @@ async function apiRequest<T>(
   }
 
   return response.json();
+}
+
+function timestampToJstDay(timestamp: number): string {
+  const jstTime = new Date(timestamp + JST_OFFSET_MS);
+  const year = jstTime.getUTCFullYear();
+  const month = String(jstTime.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(jstTime.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toBatchRecord(record: HistoryRecord): HistoryBatchRecord {
+  return {
+    memberId: record.memberId,
+    memberName: record.memberName,
+    memberAvatar: record.memberAvatar,
+    eventId: record.eventId,
+    eventName: record.eventName,
+    sessionId: record.sessionId,
+    sessionName: record.sessionName,
+    waitingCount: record.waitingCount,
+    waitingTime: record.waitingTime,
+    avgWaitTime: record.avgWaitTime,
+  };
+}
+
+async function writeHistoryBatch(payload: HistoryBatchWritePayload): Promise<boolean> {
+  if (payload.records.length === 0) return false;
+
+  try {
+    for (let index = 0; index < payload.records.length; index += MAX_HISTORY_WRITE_BATCH) {
+      const chunk = payload.records.slice(index, index + MAX_HISTORY_WRITE_BATCH);
+      await apiRequest('/history', {
+        method: 'POST',
+        body: JSON.stringify({
+          records: chunk,
+          eventDay: payload.eventDay,
+          snapshotTimestamp: payload.snapshotTimestamp,
+        }),
+      });
+    }
+    return true;
+  } catch (error) {
+    console.error('Failed to save history:', error);
+    return false;
+  }
 }
 
 // ========== CRUD 操作 ==========
@@ -95,18 +143,38 @@ export async function saveBatchHistoryRecords(
   eventDay?: string,
   snapshotTimestamp?: number,
 ): Promise<boolean> {
+  return writeHistoryBatch({ records, eventDay, snapshotTimestamp });
+}
+
+export async function importHistoryRecords(records: HistoryRecord[]): Promise<boolean> {
   if (records.length === 0) return false;
 
-  try {
-    await apiRequest('/history', {
-      method: 'POST',
-      body: JSON.stringify({ records, eventDay, snapshotTimestamp }),
-    });
-    return true;
-  } catch (error) {
-    console.error('Failed to save history:', error);
-    return false;
+  const recordsByTimestamp = new Map<number, HistoryRecord[]>();
+  for (const record of records) {
+    const snapshot = recordsByTimestamp.get(record.timestamp) ?? [];
+    snapshot.push(record);
+    recordsByTimestamp.set(record.timestamp, snapshot);
   }
+
+  const timestamps = Array.from(recordsByTimestamp.keys()).sort((a, b) => a - b);
+  for (const timestamp of timestamps) {
+    const snapshot = recordsByTimestamp.get(timestamp);
+    if (!snapshot || snapshot.length === 0) {
+      continue;
+    }
+
+    const saved = await writeHistoryBatch({
+      records: snapshot.map(toBatchRecord),
+      eventDay: timestampToJstDay(timestamp),
+      snapshotTimestamp: timestamp,
+    });
+
+    if (!saved) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -332,7 +400,10 @@ export function getSettings(): HistorySettings {
   const stored = localStorage.getItem(SETTINGS_KEY);
   if (stored) {
     try {
-      return JSON.parse(stored);
+      return {
+        ...defaultSettings(),
+        ...JSON.parse(stored),
+      };
     } catch {
       return defaultSettings();
     }
@@ -357,9 +428,8 @@ export function saveSettings(settings: HistorySettings): void {
  */
 export function defaultSettings(): HistorySettings {
   return {
-    autoSave: true,       // 默认开启自动保存
-    playbackSpeed: 1,     // 默认播放速度 1x
-    retentionDays: 7,     // 默认保留 7 天
+    playbackSpeed: 1,
+    retentionDays: 7,
   };
 }
 

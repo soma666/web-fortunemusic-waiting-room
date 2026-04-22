@@ -43,6 +43,8 @@ interface DayEventEntry {
   lastUpdated: number;
 }
 
+type HistoryWriteRecord = Omit<HistoryRecord, 'id' | 'timestamp'>;
+
 // ========== 数据库初始化 ==========
 
 let db: Database;
@@ -87,13 +89,21 @@ function timestampToJSTDay(timestamp: number): string {
   return `${y}-${m}-${d}`;
 }
 
+function parseJstDay(day: string): [number, number, number] {
+  const [year = NaN, month = NaN, date = NaN] = day.split('-').map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(date)) {
+    throw new Error(`Invalid JST day: ${day}`);
+  }
+  return [year, month, date];
+}
+
 function jstDayToStartTimestamp(day: string): number {
-  const [y, m, d] = day.split('-').map(Number);
+  const [y, m, d] = parseJstDay(day);
   return Date.UTC(y, m - 1, d, 0, 0, 0, 0) - JST_OFFSET_MS;
 }
 
 function jstDayToEndTimestamp(day: string): number {
-  const [y, m, d] = day.split('-').map(Number);
+  const [y, m, d] = parseJstDay(day);
   return Date.UTC(y, m - 1, d, 23, 59, 59, 999) - JST_OFFSET_MS;
 }
 
@@ -102,6 +112,15 @@ function jstDayToEndTimestamp(day: string): number {
 function cleanExpired() {
   const cutoff = Date.now() - TTL_MS;
   getDb().run("DELETE FROM history WHERE timestamp < ?", [cutoff]);
+}
+
+function resolveSnapshotTimestamp(snapshotTimestamp: unknown): number {
+  if (typeof snapshotTimestamp !== 'number' || !Number.isFinite(snapshotTimestamp)) {
+    return Date.now();
+  }
+
+  const value = Math.floor(snapshotTimestamp);
+  return value > 0 ? value : Date.now();
 }
 
 // ========== GET 处理 ==========
@@ -270,7 +289,7 @@ export function handleGetLegacy(
 
 // ========== POST 处理 ==========
 
-export function handlePost(records: any[]): Response {
+export function handlePost(records: HistoryWriteRecord[], _eventDay?: string, snapshotTimestamp?: number): Response {
   if (!Array.isArray(records) || records.length === 0) {
     return Response.json({ error: 'Invalid records: must be a non-empty array' }, { status: 400 });
   }
@@ -280,16 +299,16 @@ export function handlePost(records: any[]): Response {
   }
 
   const database = getDb();
-  const timestamp = Date.now();
+  const timestamp = resolveSnapshotTimestamp(snapshotTimestamp);
 
   const insert = database.prepare(`
     INSERT OR REPLACE INTO history (id, memberId, memberName, memberAvatar, eventId, eventName, sessionId, sessionName, timestamp, waitingCount, waitingTime, avgWaitTime)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const insertMany = database.transaction((recs: any[]) => {
+  const insertMany = database.transaction((recs: HistoryWriteRecord[]) => {
     for (const record of recs) {
-      const id = `${record.memberId}:${timestamp}`;
+      const id = `${record.eventId}:${record.sessionId}:${record.memberId}:${timestamp}`;
       const avgWaitTime = record.avgWaitTime ?? (record.waitingCount > 0 ? Math.floor(record.waitingTime / record.waitingCount) : 0);
       insert.run(
         id,

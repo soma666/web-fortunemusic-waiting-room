@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Card, CardTitle } from './ui/card';
 import { Clock, Users, Timer } from 'lucide-react';
 import { getPeopleCountColors, getWaitingTimeColors } from '@/lib/status-colors';
@@ -11,11 +12,10 @@ interface WaitingRoomGridProps {
   members: Map<string, Member>
 }
 
-interface room {
+interface Room {
   id: string;
   order: number;
   name: string;
-  thumbnailUrl: string;
   waitingCount: number;
   waitingTime: number;
   avgWaitTime: number;
@@ -25,11 +25,11 @@ function joinMemberWaitingRoom(
   currentSessionID: number,
   waitingRooms: Map<number, WaitingRoom[]>,
   members: Map<string, Member>
-): room[] {
+): Room[] {
   const rooms = waitingRooms.get(currentSessionID);
   if (!rooms) return [];
 
-  const result: room[] = [];
+  const result: Room[] = [];
   for (const room of rooms) {
     const member = members.get(room.ticketCode);
     if (member) {
@@ -40,18 +40,20 @@ function joinMemberWaitingRoom(
         id: room.ticketCode,
         order: member.order,
         name: member.name,
-        thumbnailUrl: member.thumbnailUrl,
         waitingCount: room.peopleCount,
         waitingTime: room.waitingTime,
         avgWaitTime,
       });
     }
   }
-  return result;
+  return result.sort((left, right) => left.order - right.order);
 }
 
 export function WaitingRoomGrid({ currentSessionID, waitingRooms, members }: WaitingRoomGridProps) {
-  const rooms: room[] = joinMemberWaitingRoom(currentSessionID, waitingRooms, members);
+  const rooms = useMemo(
+    () => joinMemberWaitingRoom(currentSessionID, waitingRooms, members),
+    [currentSessionID, waitingRooms, members],
+  );
 
   return (
     <div className="w-full grid gap-[5px] p-[5px] grid-cols-[repeat(auto-fill,minmax(140px,1fr))] lg:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">

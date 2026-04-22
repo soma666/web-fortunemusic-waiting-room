@@ -134,6 +134,13 @@ function parseStringArray(items: unknown): string[] {
   return items.filter((item): item is string => typeof item === 'string');
 }
 
+function sumPipelineNumbers(values: unknown[]): number {
+  return values.reduce<number>(
+    (sum, value) => sum + (typeof value === 'number' ? value : Number(value) || 0),
+    0,
+  );
+}
+
 async function getIndexedDays(): Promise<string[]> {
   const indexedDays = parseStringArray(await getKv().smembers(HISTORY_DAYS_INDEX_KEY));
   if (indexedDays.length > 0) {
@@ -477,15 +484,15 @@ async function handleGetCollectorDiag(req: VercelRequest, res: VercelResponse) {
 
 /** mode=days: Compute from sorted set keys (not cached day index) */
 async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
-  const days = await getIndexedDays();
-  if (days.length === 0) {
+  const indexedDays = await getIndexedDays();
+  if (indexedDays.length === 0) {
     res.status(200).json({ days: [] });
     return;
   }
 
   const allKeys: string[] = [];
   const dayKeysMap = new Map<string, string[]>();
-  for (const day of days) {
+  for (const day of indexedDays) {
     const keys = await getDayTsKeys(day);
     dayKeysMap.set(day, keys);
     allKeys.push(...keys);
@@ -504,7 +511,7 @@ async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
 
   const dayMap = new Map<string, { eventIds: Set<number>; sessionIds: Set<number>; totalRecords: number }>();
   let offset = 0;
-  for (const day of days) {
+  for (const day of indexedDays) {
     const keys = dayKeysMap.get(day) || [];
     for (const key of keys) {
       const parts = key.split(':');
@@ -524,15 +531,15 @@ async function handleGetDays(_req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  const days = Array.from(dayMap.entries()).map(([day, entry]) => ({
+  const daySummaries = Array.from(dayMap.entries()).map(([day, entry]) => ({
     day,
     eventCount: entry.eventIds.size,
     sessionCount: entry.sessionIds.size,
     totalRecords: entry.totalRecords,
   }));
 
-  days.sort((a, b) => b.day.localeCompare(a.day));
-  res.status(200).json({ days });
+  daySummaries.sort((a, b) => b.day.localeCompare(a.day));
+  res.status(200).json({ days: daySummaries });
 }
 
 /** mode=events: Compute from sorted set keys (not cached day index) */
@@ -803,7 +810,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
           countPipeline.zcard(key);
         }
         const counts = await countPipeline.exec();
-        deleted += counts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+        deleted += sumPipelineNumbers(counts);
 
         const pipeline = getKv().pipeline();
         for (const key of tsKeys) {
@@ -835,7 +842,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
           countPipeline.zcard(key);
         }
         const counts = await countPipeline.exec();
-        deleted += counts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+        deleted += sumPipelineNumbers(counts);
 
         const pipeline = getKv().pipeline();
         for (const key of tsKeys) {
@@ -855,7 +862,7 @@ async function handleDelete(req: VercelRequest, res: VercelResponse) {
           removePipeline.zremrangebyscore(key, 0, beforeTimestamp - 1);
         }
         const removedCounts = await removePipeline.exec();
-        deleted += removedCounts.reduce((sum, count) => sum + ((count as number) || 0), 0);
+        deleted += sumPipelineNumbers(removedCounts);
         await pruneEmptyTsKeys(cutoffKeys);
       }
     }

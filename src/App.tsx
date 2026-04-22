@@ -8,7 +8,7 @@ import { fetchEvents, type Session, type Event, type Member } from "@/api/fortun
 import { fetchWaitingRooms, type WaitingRoom } from "@/api/fortunemusic/waitingRooms";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SessionSelector } from "@/components/SessionSelector";
-import { findNearestEvent } from "@/lib/aggregator";
+import { findNearestEvent, findNearestSession } from "@/lib/aggregator";
 import { EventCard } from "@/components/EventCard";
 import { StatsBar } from "@/components/StatsBar";
 import { WaitingRoomGrid } from "@/components/WaitingRoomGrid";
@@ -83,7 +83,12 @@ export function App() {
     };
 
     const onMouseMove = (e: MouseEvent) => handleMove(e.clientX);
-    const onTouchMove = (e: TouchEvent) => handleMove(e.touches[0].clientX);
+    const onTouchMove = (e: TouchEvent) => {
+      const touch = e.touches[0];
+      if (touch) {
+        handleMove(touch.clientX);
+      }
+    };
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', handleEnd);
@@ -119,18 +124,27 @@ export function App() {
   const [totalWaitingPeople, setTotalWaitingPeople] = useState<number>(0);
   const [members, setMembers] = useState<Map<string, Member>>(new Map());
   const [notice, setNotice] = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
-  const [nextRefreshTime, setNextRefreshTime] = useState<Date>(new Date(Date.now() + REFRESH_INTERVAL_MS));
-  const nextRefreshTimeRef = useRef<Date>(nextRefreshTime);
+  const nextRefreshTimeRef = useRef<Date>(new Date(Date.now() + REFRESH_INTERVAL_MS));
   const refreshInFlightRef = useRef(false);
   const [refreshCountdown, setRefreshCountdown] = useState<number>(REFRESH_INTERVAL);
   const [showHistory, setShowHistory] = useState(false);
 
   const scheduleNextRefresh = useCallback((baseTimestamp = Date.now()) => {
     const nextTime = new Date(baseTimestamp + REFRESH_INTERVAL_MS);
-    setNextRefreshTime(nextTime);
     nextRefreshTimeRef.current = nextTime;
     setRefreshCountdown(REFRESH_INTERVAL);
+  }, []);
+
+  const applySelectedEvent = useCallback((event: Event, targetTime: Date) => {
+    setSelectedEvent(event);
+    setSessions(event.sessions);
+    setMembers(extractMembers(event.sessions));
+
+    const preferredSession = findNearestSession(event, targetTime)
+      ?? event.sessions.values().next().value
+      ?? null;
+    setSelectedSession(preferredSession);
+    return preferredSession;
   }, []);
 
   const loadWaitingRoomSnapshot = useCallback(async (sessionId: number) => {
@@ -143,7 +157,6 @@ export function App() {
     }
     setWaitingRooms(filteredWaitingRooms);
     setTotalWaitingPeople(calculateTotalWaitingPeople(filteredWaitingRooms));
-    setLastUpdate(new Date());
     return filteredWaitingRooms;
   }, []);
 
@@ -153,18 +166,21 @@ export function App() {
       try {
         setLoading(true);
         setError(null);
-        let current = new Date();
-        let events = await fetchEvents();
+        const current = new Date();
+        const events = await fetchEvents();
         setEvents(events);
-        let defaultEvent = findNearestEvent(events, current)!;
-        setSelectedEvent(defaultEvent);
-        setSessions(defaultEvent.sessions);
-        let k = defaultEvent.sessions.keys().next().value!;
-        let defaultSessions = defaultEvent.sessions.get(k)!;
-        setSelectedSession(defaultSessions);
-        let existedMembers = extractMembers(defaultEvent.sessions);
-        setMembers(existedMembers);
-        await loadWaitingRoomSnapshot(defaultSessions.id);
+
+        const defaultEvent = findNearestEvent(events, current);
+        if (!defaultEvent) {
+          throw new Error("No available events found");
+        }
+
+        const defaultSession = applySelectedEvent(defaultEvent, current);
+        if (!defaultSession) {
+          throw new Error("No sessions found for the selected event");
+        }
+
+        await loadWaitingRoomSnapshot(defaultSession.id);
         scheduleNextRefresh();
       } catch (err) {
         console.error("Failed to load events:", err);
@@ -174,7 +190,7 @@ export function App() {
       }
     };
     loadData();
-  }, [loadWaitingRoomSnapshot, scheduleNextRefresh]);
+  }, [applySelectedEvent, loadWaitingRoomSnapshot, scheduleNextRefresh]);
 
   // ========== Refresh waiting rooms ==========
   const refreshWaitingRooms = useCallback(async (
@@ -202,18 +218,9 @@ export function App() {
     });
 
     if (foundEvent) {
-      const selectedEventData: Event = foundEvent;
-      setSelectedEvent(selectedEventData);
-      setSessions(selectedEventData.sessions);
-      const updatedMembers = extractMembers(selectedEventData.sessions);
-      setMembers(updatedMembers);
-      const firstSessionKey = selectedEventData.sessions.keys().next().value;
-      if (firstSessionKey !== undefined) {
-        const firstSession = selectedEventData.sessions.get(firstSessionKey);
-        if (firstSession) setSelectedSession(firstSession);
-      }
+      applySelectedEvent(foundEvent, new Date());
     }
-  }, [events]);
+  }, [applySelectedEvent, events]);
 
   const handleEventSelectMobile = useCallback((uniqueId: string) => {
     handleEventSelect(uniqueId);
